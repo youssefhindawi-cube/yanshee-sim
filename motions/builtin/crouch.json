@@ -1,0 +1,21 @@
+{
+  "name": "crouch",
+  "description": "Crouch down, hold, stand up (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightHipFB": 35,
+        "RightKneeFlex": 26,
+        "RightAnkleFB": 135,
+        "LeftHipFB": 145,
+        "LeftKneeFlex": 154,
+        "LeftAnkleFB": 45,
+        "RightShoulderRoll": 50,
+        "LeftShoulderRoll": 130
+      },
+      "runtime": 1200,
+      "hold": 1000
+    }
+  ],
+  "end_in_reset": true
+}

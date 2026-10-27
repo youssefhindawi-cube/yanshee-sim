@@ -1,0 +1,53 @@
+{
+  "name": "come_on_left",
+  "description": "Hold the left arm forward and beckon (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "LeftShoulderRoll": 155,
+        "LeftShoulderFlex": 50,
+        "LeftElbowFlex": 16
+      },
+      "runtime": 800,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 80
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 20
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 80
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 20
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 80
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 16
+      },
+      "runtime": 350,
+      "hold": 200
+    }
+  ],
+  "end_in_reset": true
+}

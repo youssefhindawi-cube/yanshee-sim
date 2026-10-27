@@ -75,7 +75,7 @@
     <mesh name="NeckLR_collision" file="NeckLR_collision.stl"/>
   </asset>
   <worldbody>
-    <body name="base_link" pos="0 0 -0.00734">
+    <body name="base_link" pos="0 0 -0.00733">
       <freejoint name="root"/>
       <inertial pos="-0.00085 0.00213 0.27696" mass="0.872" fullinertia="0.00160682 0.00176299 0.00151442 7.04e-06 9.18e-06 5.107e-05"/>
       <geom class="visual" mesh="base_link_0" material="c0"/>
@@ -239,6 +239,6 @@
     <rangefinder name="distance_right" site="distance_right" cutoff="1.5"/>
   </sensor>
   <keyframe>
-    <key name="reset" qpos="0 0 -0.00734 1 0 0 0 1.57 2.44 2.87 1.57 0.7 0.262 1.57 1.05 1.33 1.92 1.57 1.57 2.09 1.81 1.22 1.57 1.57" ctrl="1.57 2.44 2.87 1.57 0.7 0.262 1.57 1.05 1.33 1.92 1.57 1.57 2.09 1.81 1.22 1.57 1.57"/>
+    <key name="reset" qpos="0 0 -0.00733 1 0 0 0 1.5708 2.44346 2.86234 1.5708 0.698132 0.261799 1.5708 1.0472 1.32645 1.91986 1.5708 1.5708 2.0944 1.81514 1.22173 1.5708 1.5708" ctrl="1.5708 2.44346 2.86234 1.5708 0.698132 0.261799 1.5708 1.0472 1.32645 1.91986 1.5708 1.5708 2.0944 1.81514 1.22173 1.5708 1.5708"/>
   </keyframe>
 </mujoco>

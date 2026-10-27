@@ -1,0 +1,14 @@
+{
+  "name": "head_forward",
+  "description": "Turn the head to the front (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "NeckLR": 90
+      },
+      "runtime": 600,
+      "hold": 300
+    }
+  ],
+  "end_in_reset": false
+}

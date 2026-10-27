@@ -1,0 +1,16 @@
+{
+  "name": "raise_right",
+  "description": "Raise the right arm straight up and hold it (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderFlex": 15,
+        "RightElbowFlex": 164,
+        "NeckLR": 100
+      },
+      "runtime": 900,
+      "hold": 900
+    }
+  ],
+  "end_in_reset": true
+}

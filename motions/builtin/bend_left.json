@@ -1,0 +1,20 @@
+{
+  "name": "bend_left",
+  "description": "Lean to the left with the right arm over the head (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "LeftHipLR": 80,
+        "RightHipLR": 80,
+        "LeftAnkleUD": 100,
+        "RightAnkleUD": 100,
+        "RightShoulderFlex": 15,
+        "RightElbowFlex": 140,
+        "LeftShoulderFlex": 60
+      },
+      "runtime": 1000,
+      "hold": 800
+    }
+  ],
+  "end_in_reset": true
+}

@@ -1,0 +1,14 @@
+{
+  "name": "head_right",
+  "description": "Turn the head to the right (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "NeckLR": 135
+      },
+      "runtime": 700,
+      "hold": 500
+    }
+  ],
+  "end_in_reset": false
+}

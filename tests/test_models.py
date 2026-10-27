@@ -1,6 +1,9 @@
-"""Consistency checks for the generated models. Run: python3 -m pytest tests -q  (or python3 tests/test_models.py)"""
+"""Consistency checks for the generated models and the SimRobot backend.
+Run: python3 -m pytest tests -q  (or python3 tests/test_models.py)"""
+import ast
 import math
 import os
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
@@ -9,10 +12,12 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from yanshee_sim.servos import LIMITS, NAMES, RESET_POSE  # noqa: E402
+from yanshee_sim.robot import ServoCommandError, SimRobot  # noqa: E402
+from yanshee_sim.servos import LIMITS, NAMES, RESET_POSE, check_angles, clamp_angles  # noqa: E402
 
 SCENE = os.path.join(ROOT, "model", "scene.xml")
 URDF = os.path.join(ROOT, "ros2_ws", "src", "yanshee_description", "urdf", "yanshee.urdf")
+LAUNCH = os.path.join(ROOT, "ros2_ws", "src", "yanshee_description", "launch", "display.launch.py")
 
 
 def rpy_to_mat(r, p, y):
@@ -84,8 +89,36 @@ def test_keyframe_is_reset_pose():
     d = mujoco.MjData(m)
     mujoco.mj_resetDataKeyframe(m, d, m.key("reset").id)
     for n, deg in RESET_POSE.items():
-        assert abs(math.degrees(d.qpos[m.jnt_qposadr[m.joint(n).id]]) - deg) < 0.6, n
-        assert abs(math.degrees(d.ctrl[m.actuator(n).id]) - deg) < 0.6, n
+        assert abs(math.degrees(d.qpos[m.jnt_qposadr[m.joint(n).id]]) - deg) < 0.01, n
+        assert abs(math.degrees(d.ctrl[m.actuator(n).id]) - deg) < 0.01, n
+
+
+def test_launch_zeros_are_reset_pose():
+    tree = ast.parse(open(LAUNCH).read())
+    node = next(n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "RESET_POSE_RAD")
+    zeros = ast.literal_eval(node.value)
+    assert set(zeros) == set(NAMES)
+    for n, deg in RESET_POSE.items():
+        assert abs(math.degrees(zeros[n]) - deg) < 0.01, n
+
+
+def test_reset_pose_feet_on_floor():
+    m = mujoco.MjModel.from_xml_path(SCENE)
+    d = mujoco.MjData(m)
+    mujoco.mj_resetDataKeyframe(m, d, m.key("reset").id)
+    mujoco.mj_kinematics(m, d)
+    low = math.inf
+    for g in range(m.ngeom):
+        if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+            a, k = m.mesh_vertadr[m.geom_dataid[g]], m.mesh_vertnum[m.geom_dataid[g]]
+            low = min(low, (m.mesh_vert[a:a + k] @ d.geom_xmat[g].reshape(3, 3).T + d.geom_xpos[g])[:, 2].min())
+    assert 0 < low < 0.002, f"lowest vertex at {low * 1000:.2f} mm"
+
+
+def test_build_models_help_does_not_build():
+    out = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_models.py"), "--help"],
+                         capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0 and "usage" in out.stdout and "bodies:" not in out.stdout
 
 
 def test_stands_in_reset_pose():
@@ -100,6 +133,88 @@ def test_stands_in_reset_pose():
     tilt = math.degrees(math.acos(max(-1.0, min(1.0, up_z))))
     assert tilt < 5, f"torso tilted {tilt:.1f} deg after 3 s"
     assert z_spawn - d.qpos[2] < 0.006, f"torso sagged {(z_spawn - d.qpos[2]) * 1000:.1f} mm"
+
+
+# -- SimRobot ---------------------------------------------------------------------------
+def _raises(fn, exc=ServoCommandError):
+    try:
+        fn()
+    except exc:
+        return True
+    return False
+
+
+def test_sim_rejects_nan_and_unknown_names():
+    nan = float("nan")
+    assert clamp_angles({"NeckLR": nan, "RightHipLR": 500, "Foo": 1}) == {"RightHipLR": 120}
+    assert check_angles({"NeckLR": nan}) and check_angles({"NeckLR": "90"})
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.strict = False
+    assert _raises(lambda: bot.set_servos_angles({"NeckLR": nan}))
+    assert _raises(lambda: bot.set_servos_angles({"NeckLR": 90}, runtime=float("inf")))
+    assert _raises(lambda: bot.get_servo_angle_value("Foo"))
+    assert _raises(lambda: bot.get_servos_angles(["NeckLR", "Foo"]))
+    assert _raises(lambda: bot.set_servos_mode("limp", ["NeckLR"]))
+    assert bot.get_servos_angles("NeckLR")["data"] == {"NeckLR": 90}
+    bot.wait(-1)  # same as wait(0), in every mode
+    bot.wait(0.5)
+    assert bot.torso_tilt_deg() < 5
+    bot.close()
+
+
+def test_sim_viewer_reset_goes_to_reset_pose():
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.set_servos_angles({"NeckLR": 30}, 200)
+    bot.wait(0.6)
+    bot.set_servos_angles({"NeckLR": 150}, 200)
+    bot.wait(0.6)
+    with bot._lock:
+        mujoco.mj_resetData(bot.model, bot.data)  # what the viewer's Backspace / Reset does
+    bot.wait(1.0)
+    assert bot.get_servo_angle_value("NeckLR") == 90
+    assert bot.torso_tilt_deg() < 5
+    bot.close()
+
+
+def test_sim_stop_all_and_respawn():
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.set_servos_angles({"NeckLR": 30}, 2000)
+    bot.wait(0.5)
+    bot.stop_all()
+    bot.wait(1.5)
+    assert 65 <= bot.get_servo_angle_value("NeckLR") <= 85  # stopped part-way, not at 30
+    bot.jump_to({"NeckLR": 20})
+    bot.respawn()
+    assert bot.get_servo_angle_value("NeckLR") == 90 and bot.data.time == 0
+    bot.close()
+
+
+def test_sim_program_mode_is_limp():
+    bot = SimRobot(viewer=False, realtime=False, fixed_base=True)
+    arm = ["RightShoulderFlex", "RightElbowFlex"]
+    assert bot.set_servos_mode("program", arm)["data"] == {n: True for n in arm}
+    assert bot.get_servos_mode(arm + ["NeckLR"])["data"] == {"RightShoulderFlex": "program",
+                                                             "RightElbowFlex": "program", "NeckLR": "work"}
+    bot.wait(1.5)
+    sagged = bot.get_servo_angle_value("RightShoulderFlex")
+    assert abs(sagged - RESET_POSE["RightShoulderFlex"]) > 5, "limp arm did not move under gravity"
+    bot.set_servos_mode("work", arm)
+    bot.wait(1.0)
+    assert abs(bot.get_servo_angle_value("RightShoulderFlex") - sagged) <= 2, "work mode did not hold the pose"
+    bot.close()
+
+
+def test_sim_imu_fields():
+    keys = {"id", "gyro-x", "gyro-y", "gyro-z", "accel-x", "accel-y", "accel-z",
+            "compass-x", "compass-y", "compass-z", "euler-x", "euler-y", "euler-z"}
+    for fixed in (False, True):
+        bot = SimRobot(viewer=False, realtime=False, fixed_base=fixed)
+        bot.wait(0.5)
+        g = bot.get_sensors_gyro()["data"]["gyro"][0]
+        assert set(g) == keys and all(type(v) in (int, float) for v in g.values())
+        assert 9.0 < math.hypot(g["accel-x"], g["accel-y"], g["accel-z"]) < 10.6, (fixed, g)
+        assert abs(g["euler-x"]) < 5 and abs(g["euler-y"]) < 5
+        bot.close()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+{
+  "name": "reset",
+  "description": "Return to the standing reset pose (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderRoll": 90,
+        "RightShoulderFlex": 140,
+        "RightElbowFlex": 164,
+        "LeftShoulderRoll": 90,
+        "LeftShoulderFlex": 40,
+        "LeftElbowFlex": 15,
+        "RightHipLR": 90,
+        "RightHipFB": 60,
+        "RightKneeFlex": 76,
+        "RightAnkleFB": 110,
+        "RightAnkleUD": 90,
+        "LeftHipLR": 90,
+        "LeftHipFB": 120,
+        "LeftKneeFlex": 104,
+        "LeftAnkleFB": 70,
+        "LeftAnkleUD": 90,
+        "NeckLR": 90
+      },
+      "runtime": 1000
+    }
+  ],
+  "end_in_reset": false
+}

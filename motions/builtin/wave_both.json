@@ -1,0 +1,61 @@
+{
+  "name": "wave_both",
+  "description": "Raise the both arms and wave (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderFlex": 30,
+        "RightElbowFlex": 90,
+        "NeckLR": 105,
+        "LeftShoulderFlex": 150,
+        "LeftElbowFlex": 90
+      },
+      "runtime": 800,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130,
+        "LeftElbowFlex": 50
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 80,
+        "LeftElbowFlex": 100
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130,
+        "LeftElbowFlex": 50
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 80,
+        "LeftElbowFlex": 100
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130,
+        "LeftElbowFlex": 50
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 90,
+        "LeftElbowFlex": 90
+      },
+      "runtime": 300,
+      "hold": 200
+    }
+  ],
+  "end_in_reset": true
+}

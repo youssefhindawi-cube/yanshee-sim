@@ -5,7 +5,10 @@ A MuJoCo simulator, a ROS 2 description and sim-to-real tools for the **UBTECH Y
 
 Design a movement in the simulator, check it is safe, then run the same file on the real robot.
 You can also mirror the two live: move the simulator and the robot follows, or move the robot and
-the simulator follows.
+the simulator follows. For exhibitions there is a **web GUI** (laptop or tablet browser) that drives
+the simulator, the real robot, or both at once through a safety gate:
+[`scripts/web_gui.py`](#scriptsweb_guipy-web-gui-simulator--robot-relay), designed in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ![Sample motions in the simulator](docs/motions.png)
 
@@ -37,17 +40,18 @@ the simulator follows.
 git lfs install                       # once per machine (the Webots source model is stored with Git LFS)
 git clone git@github.com:youssefhindawi-cube/yanshee-sim.git
 cd yanshee-sim
-pip install mujoco numpy
+pip install -r requirements.txt                           # MuJoCo >= 3.3, numpy, the web GUI's FastAPI stack
 
+python3 scripts/web_gui.py --host 127.0.0.1               # web GUI at http://localhost:8080/ (simulator)
 python3 scripts/view.py --fixed                           # look at the robot, drag joints by hand
 python3 scripts/play_motion.py motions/wave_right.json    # watch a motion
 python3 scripts/pose_editor.py --out motions/hello.json   # build your own motion
 ```
 
-With the robot on the same Wi-Fi (find its IP in the Yanshee app):
+With the robot on the same Wi-Fi (find its IP in the Yanshee app); nothing extra to install:
 
 ```bash
-pip install requests nest_asyncio opencv-python
+python3 scripts/web_gui.py --ip 192.168.3.13                                    # GUI; switch to Robot/Both there
 python3 scripts/mirror.py from-robot --ip 192.168.3.13                          # simulator copies the robot
 python3 scripts/play_motion.py motions/wave_right.json --real --ip 192.168.3.13 --speed 0.5
 ```
@@ -58,13 +62,17 @@ python3 scripts/play_motion.py motions/wave_right.json --real --ip 192.168.3.13 
 
 | Need | Install |
 |---|---|
-| Simulator (required) | `pip install mujoco numpy`. MuJoCo 3.x; tested with 3.8 and Python 3.10. |
-| Real robot | `pip install requests nest_asyncio opencv-python`. These are the libraries the official `YanAPI.py` imports. |
+| Everything | `pip install -r requirements.txt` |
+| Simulator (required) | `mujoco>=3.3` (the code uses the `MjSpec` editing API, new in 3.3) and `numpy`; tested with MuJoCo 3.8 and Python 3.10. |
+| Web GUI | `fastapi`, `uvicorn`, `websockets`, `Pillow` (`httpx` only for the server tests). |
+| Real robot | Nothing extra: `RealRobot` talks to the robot's REST API with the standard library (`yanshee_sim/rest.py`). |
+| `RealRobot.api` (optional, advanced) | The official `YanAPI.py` module, for calls the package does not wrap (`bot.api.sync_do_face_recognition(...)`). Needs `requests`, `nest_asyncio`, `opencv-python` and the YanAPI folder (below). |
 | ROS 2 (optional) | ROS 2 Humble with `robot_state_publisher`, `joint_state_publisher_gui`, `rviz2`. |
 | The model file | `git lfs install` before cloning, or `git lfs pull` afterwards. Without it, `source_model/robot.json` is a tiny pointer file. You only need that file to rebuild the model; `model/` already contains the generated files. |
 
-**Where YanAPI comes from.** The real-robot backend loads the official `YanAPI.py`. By default it
-looks in `../yanshee robot/yanshee/yanshee_examples/yanshee_examples/`. Point it elsewhere with:
+**Where YanAPI comes from (only for `RealRobot.api`).** The first access to `bot.api` imports the
+official `YanAPI.py`. By default it looks in `../yanshee robot/yanshee/yanshee_examples/yanshee_examples/`.
+Point it elsewhere with:
 
 ```bash
 export YANAPI_DIR=/path/to/folder/containing/YanAPI.py
@@ -90,6 +98,38 @@ The simulator runs physics **in real time in a background thread**, so it behave
 ---
 
 ## 4. Command reference
+
+### `scripts/web_gui.py`: web GUI (simulator / robot relay)
+
+```bash
+python3 scripts/web_gui.py                                  # simulator only, http://localhost:8080/ (and the LAN)
+python3 scripts/web_gui.py --host 127.0.0.1                 # reachable from this machine only
+python3 scripts/web_gui.py --ip 192.168.3.13                # connect the robot; switch modes in the GUI
+python3 scripts/web_gui.py --mode both --ip 192.168.3.13    # start relaying to the simulator and the robot
+python3 tests/fake_robot.py --port 9191 &                   # no robot? a fake one ...
+python3 scripts/web_gui.py --mode robot --ip 127.0.0.1:9191 # ... and the GUI driving it
+```
+
+| Option | Meaning |
+|---|---|
+| `--host` | Address to listen on. Default `0.0.0.0`: **anyone on the network can drive the robot**; use `127.0.0.1` to keep it to this machine. |
+| `--port` | HTTP port (default 8080). |
+| `--mode sim\|robot\|both` | Starting relay mode (default `sim`). `robot` and `both` need `--ip`. |
+| `--ip IP[:PORT]` | Robot to connect at start (port 9090 by default). |
+| `--fixed` | Hold the simulated torso in the air. |
+| `--viewer` | Also open the MuJoCo viewer window. |
+| `--motions-dir DIR` | Where the GUI's motion files live (default `motions/`). |
+| `--log-level` | Server log level (default `info`). |
+
+Exit code 2 when the port is busy, or when `--mode robot|both` cannot connect to `--ip` (with `--mode sim` a
+failed `--ip` only warns). Ctrl+C stops everything and exits.
+
+Open the printed URL in a browser (a tablet on the same Wi-Fi works). The page has a **Sim / Robot / Both**
+switch, a big **STOP** button (Esc), walking (hold the d-pad), the robot's built-in actions and dances, servo
+sliders with a keyframe recorder, LEDs/volume/sensors, speech and vision. In **Robot** and **Both** mode every
+command passes the safety gate first: servo limits, self-collision, a 90 °/s speed cap (also for motion files) and
+a 30% battery floor. Walking has a dead-man: if the page loses the server for 1.5 s, the robot stops. The REST API
+behind the page is documented at `/api/docs` and in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### `scripts/view.py`: look at the robot
 
@@ -171,12 +211,12 @@ YANSHEE_SIM_HEADLESS=1 python3 scripts/run_in_sim.py script.py   # no window
 | YanAPI call | In simulation |
 |---|---|
 | `yan_api_init`, `set_servos_angles`, `sync_set_servo_rotate`, `get_servos_angles`, `get_servo_angle_value` | Simulated exactly |
-| `start_play_motion`, `sync_play_motion`, `stop_play_motion` | `reset` / `Stop` work. Other names play `motions/recorded/NAME.json` or `motions/NAME.json` if present. |
-| `get_motion_list_value` | Lists available motion files |
+| `start_play_motion`, `sync_play_motion`, `stop_play_motion` | `reset` / `Stop` work. Other names play the first file found: `NAME_DIRECTION.json`, then `NAME.json`, in `motions/recorded/`, then `motions/builtin/` (approximate sim versions of `wave`, `raise`, `bow`, ...), then `motions/`. |
+| `get_motion_list_value` | Lists available motion files (including `motions/builtin/`) |
 | `get_robot_battery_value`, `get_robot_battery_info` | 100% |
 | `get_sensors_gyro` | Simulated IMU (frame differs from the real robot; see [section 13](#13-accuracy-and-limits)) |
 | `sync_do_tts`, `start_voice_tts`, `set_robot_led`, `set_robot_volume`, `start_play_music`, `stop_play_music` | Printed to the terminal |
-| Everything else (vision, speech recognition, other sensors) | Returns `{"code": -1, "msg": "not simulated"}`, with a warning printed once |
+| Everything else (vision, speech recognition, other sensors) | Not simulated: returns a failure value of the call's type, with a warning printed once: `-1` for `*_value` calls, `""`, `False`, `[]` or `None` where YanAPI returns those, otherwise `{"code": -1, "data": {}, "msg": "not simulated"}` |
 
 ### `scripts/record_real_motion.py`: copy a built-in motion from the robot
 
@@ -201,9 +241,11 @@ See [section 11](#11-rebuilding-the-model).
 ### Tests
 
 ```bash
-python3 tests/test_models.py
-python3 tests/test_mirror.py
+python3 -m pytest -q tests          # all of them (headless: MUJOCO_GL=egl)
+python3 tests/test_controller.py    # or one file at a time
 ```
+
+See [section 12](#12-tests).
 
 ---
 
@@ -301,11 +343,34 @@ Extra methods:
 
 Attributes: `model` and `data` (raw MuJoCo objects), and `strict` (False = clamp out-of-range angles instead of raising).
 
-### `RealRobot(ip, yanapi_dir=None, min_battery=30)`
+Also: `set_servos_mode(mode, names)` (`"program"` = limp, kp 0 on those actuators; `"work"` = hold),
+`get_servos_mode(names=None)`, `stop_all()` (cancel moves and hold the current pose), `respawn()` (stand a fallen
+robot up), `set_led(type, color, mode)` / `get_led()` and the `led` attribute (chest `button` and eye `camera` LEDs).
+`SimRobot(spec_hook=fn)` lets `fn(MjSpec)` edit the model before it is compiled.
+
+### `RealRobot(ip, yanapi_dir=None, min_battery=30, timeout=4.0)`
 
 - **On connect:** checks the robot is reachable on port 9090 (3 s timeout) and that battery ≥ `min_battery`.
-- **Attributes:** `battery`, the starting percentage, and `api`, the official YanAPI module for everything else (`bot.api.sync_do_tts("Hello")`, `bot.api.sync_do_face_recognition("age")`, ...).
-- **`stop()`:** stops any built-in motion.
+- **Transport:** `rest`, a `YansheeRest` client (`yanshee_sim/rest.py`, standard library only) with a `timeout` on every request. All the methods above go through it.
+- **Attributes:** `battery`, the starting percentage, and `api`, the official YanAPI module for anything else (`bot.api.sync_do_face_recognition("age")`, ...). It is imported on first use and needs the extra libraries in [section 2](#2-installation).
+- **`battery_info()`:** `{"percent", "charging", "voltage"}` read now.
+- **`set_servos_mode(mode, names)` / `get_servos_mode(names=None)`:** `"program"` (limp, pose by hand) or `"work"`.
+- **`play_builtin(name, direction="", speed="normal", repeat=1, version="v1")`:** start a built-in motion (`"wave"`, `"WakaWaka"`, ...); the reply has `data.total_time` in ms. System motions (`Shutdown`, `calibration`, `ActionAging`, ...) are refused unless `allow_system=True`.
+- **`stop()`:** stops any built-in motion. **`stop_all()`:** motion v1 and v2, gait, music and speech at once; never raises.
+
+### `yanshee_sim.controller.Controller` (what the web GUI drives)
+
+```python
+from yanshee_sim.controller import Controller
+with Controller() as ctl:                        # mode "sim"
+    ctl.play_action("wave", "right")
+    ctl.connect("192.168.3.13"); ctl.set_mode("both")   # simulator and robot together
+    ctl.set_servos({"NeckLR": 60}, runtime=800)          # through the safety gate
+    ctl.stop_all()
+```
+
+Every method returns `{"ok": ...}` and never raises on robot errors (only `set_mode` raises `ModeError`). The full
+method list, the relay modes and the safety rules are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 2.
 
 ### `yanshee_sim.motion`
 
@@ -462,8 +527,16 @@ Then run `python3 tools/build_models.py && python3 tests/test_models.py`. Don't 
 |---|---|
 | `tests/test_models.py` | Reset pose inside limits; URDF and MuJoCo forward kinematics agree (< 1 µm over random poses); reset keyframe; the robot stands for 3 s (< 5° tilt, < 6 mm sag) |
 | `tests/test_mirror.py` | Sim → robot sends changes with the speed cap, blocks self-collisions, starts aligned with the robot; robot → sim follows and clamps |
+| `tests/test_motion.py` | Motion validation (limits, runtimes, speed, the return to reset), playback and cancelling, the self-collision sweep, `play_motion.py` (headless and against the fake robot) |
+| `tests/test_rest.py` | `YansheeRest` against the fake robot: every endpoint, timeouts, refusals, bad replies, the same paths and payloads as the official `YanAPI.py` |
+| `tests/test_controller.py` | The relay controller in sim, robot and both modes: safety gate, STOP and mode-switch races, walking dead-man, robot that stops answering, concurrency and a soak (`YANSHEE_SOAK_S` shortens it) |
+| `tests/test_server.py` | The web server with FastAPI's `TestClient`: every endpoint, bad input, body limits, the WebSocket, MJPEG streams and the robot-camera proxy, a real uvicorn shutdown |
+| `tests/test_yanapi_sim.py` | `run_in_sim.py`'s simulated YanAPI (official example scripts run unchanged, stop/sync playback, failure values), `record_real_motion.py`, `pose_editor.py`, `view.py` |
 
-Both also run under `pytest`.
+Run them all with `python3 -m pytest -q tests` (about 3 minutes, headless with `MUJOCO_GL=egl`), or each file with
+`python3 tests/test_NAME.py`. `tests/fake_robot.py` is a fake Yanshee REST server used by the robot tests; run it by
+hand for GUI work without hardware: `python3 tests/fake_robot.py --port 9191` (`--battery 20`, `--refuse`,
+`--slow 5` inject errors).
 
 ---
 
@@ -482,7 +555,7 @@ Approximate, and worth tuning against the real robot:
   - A laptop cannot do closed-loop balance over the REST API anyway (tens of ms per call).
 - **Inertia data:** one link's Webots inertia values were physically invalid. MuJoCo's `balanceinertia` repairs them.
 - **IMU:** the simulated IMU uses the model frame. The real robot's raw IMU frame is left-back-up.
-- **Not simulated:** vision, voice, LEDs, the built-in walking gait and built-in dances. Built-in motions can be recorded with `record_real_motion.py`.
+- **Not simulated:** vision (except colour detection from the rendered head camera in the web GUI), voice, and the built-in dances. The web GUI's sim LEDs, sim built-ins (`motions/builtin/`) and sim gait are approximations. Built-in motions can be recorded with `record_real_motion.py`.
 - **Not yet confirmed on hardware:**
   - the right-arm reset values (mirrored from the left)
   - the joint directions in [section 8](#8-servo-reference)
@@ -498,8 +571,11 @@ Approximate, and worth tuning against the real robot:
 | `battery N% is below 30%` | Charge. The robot refuses motions near 30% anyway (`lowbattery`). |
 | `ServoCommandError: NAME=X outside A-B` | The angle is outside that servo's range ([section 8](#8-servo-reference)). |
 | `refusing to send this motion` | Fix the reported errors or self-collisions first. |
-| `No module named 'YanAPI'` | Set `YANAPI_DIR` to the folder that contains `YanAPI.py`. |
-| `No module named 'cv2'` / `nest_asyncio` | `pip install opencv-python nest_asyncio requests` |
+| `No module named 'YanAPI'` (only when using `bot.api`) | Set `YANAPI_DIR` to the folder that contains `YanAPI.py`. |
+| `No module named 'cv2'` / `nest_asyncio` (only when using `bot.api`) | `pip install opencv-python nest_asyncio requests` |
+| `module 'mujoco' has no attribute 'MjSpec'` | MuJoCo is older than 3.3: `pip install -r requirements.txt`. |
+| `web_gui.py`: `port 8080 ... is in use` | Another GUI is running; stop it or use `--port 8081`. |
+| GUI says "refused: ... cancelled by STOP" | A command was still waiting when STOP or a mode switch came; send it again. |
 | `robot.json` is ~130 bytes / the converter fails to parse it | Git LFS pointer: `git lfs install && git lfs pull`. |
 | No window appears | You're on a machine without a display. Use `--headless`, or `MUJOCO_GL=egl` for rendering. |
 | The robot falls in the simulator | That's the point: the motion is unbalanced. Try `--fixed` to work on the arms, or adjust the legs. |
@@ -512,14 +588,16 @@ Approximate, and worth tuning against the real robot:
 
 | Path | Contents |
 |---|---|
-| `yanshee_sim/` | Python package: `robot.py` (sim and real backends), `motion.py`, `mirror.py`, `servos.py`, `yanapi_sim.py` (fake YanAPI) |
-| `scripts/` | `view.py`, `play_motion.py`, `pose_editor.py`, `mirror.py`, `run_in_sim.py`, `record_real_motion.py` |
+| `yanshee_sim/` | Python package: `robot.py` (sim and real backends), `rest.py` (REST client for the robot), `controller.py` (relay controller and safety gate), `sim_extras.py` (renderer, LEDs, sim built-ins and gait, sim battery), `motion.py`, `mirror.py`, `servos.py`, `yanapi_sim.py` (fake YanAPI) |
+| `yanshee_sim/web/` | Web GUI: `server.py` (FastAPI) and `static/` (the page: `index.html`, `app.js`, `style.css`) |
+| `scripts/` | `web_gui.py`, `view.py`, `play_motion.py`, `pose_editor.py`, `mirror.py`, `run_in_sim.py`, `record_real_motion.py` |
 | `model/` | Generated MuJoCo model (`scene.xml` is the entry point) |
 | `ros2_ws/src/yanshee_description/` | ROS 2 package: URDF, meshes, launch, RViz config |
-| `motions/` | Motion files; `recorded/` holds motions copied from the robot |
+| `motions/` | Motion files; `recorded/` holds motions copied from the robot, `builtin/` the approximate sim versions of the robot's parametric built-ins |
+| `requirements.txt` | Python dependencies |
 | `tools/build_models.py` | Webots JSON → MJCF + URDF + STL converter |
 | `source_model/robot.json` | Webots Yanshee model (Git LFS) from [Yanshee-Serenade/Yanshee-RL-Unity](https://github.com/Yanshee-Serenade/Yanshee-RL-Unity). That repository has no license file, so ask its authors before redistributing. |
-| `tests/` | Model and mirror tests |
+| `tests/` | Tests (see [section 12](#12-tests)), `fake_robot.py` (fake Yanshee REST server) and `data/` (the motion list captured from a real robot) |
 | `knowledge/` | Yanshee knowledge base, course digest and online resources |
-| `docs/` | Images used in this README |
+| `docs/` | `ARCHITECTURE.md` (design of the relay controller, REST client, web server and GUI) and images used in this README |
 | `GIT_GUIDE.md` | How to commit and push to this repo (multi-account setup, helper commands) |

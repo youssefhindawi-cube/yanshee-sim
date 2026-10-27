@@ -1,0 +1,62 @@
+{
+  "name": "come_on_both",
+  "description": "Hold the both arms forward and beckon (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderRoll": 25,
+        "RightShoulderFlex": 130,
+        "RightElbowFlex": 164,
+        "LeftShoulderRoll": 155,
+        "LeftShoulderFlex": 50,
+        "LeftElbowFlex": 16
+      },
+      "runtime": 800,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 100,
+        "LeftElbowFlex": 80
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 160,
+        "LeftElbowFlex": 20
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 100,
+        "LeftElbowFlex": 80
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 160,
+        "LeftElbowFlex": 20
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 100,
+        "LeftElbowFlex": 80
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 164,
+        "LeftElbowFlex": 16
+      },
+      "runtime": 350,
+      "hold": 200
+    }
+  ],
+  "end_in_reset": true
+}

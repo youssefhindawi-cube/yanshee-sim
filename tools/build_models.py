@@ -3,6 +3,10 @@
 
 Usage:
     python3 tools/build_models.py            # reads source_model/robot.json, writes model/ and the ROS 2 package
+    python3 tools/build_models.py --help
+
+The MuJoCo "reset" keyframe and the RViz slider start values come from yanshee_sim/servos.py
+RESET_POSE, so edit the pose there and rebuild.
 
 Conventions of the generated models
 -----------------------------------
@@ -13,28 +17,29 @@ Conventions of the generated models
   MuJoCo uses `ref` so qpos == servo radians; the URDF bakes the same offset into the joint origin.
 * Model frame: z up, robot faces +y, feet at z ~ 0.
 """
+import argparse
 import json
 import math
 import os
 import struct
 import sys
-from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from yanshee_sim.servos import IDS, LIMITS, NAMES  # noqa: E402
+from yanshee_sim.servos import IDS, LIMITS, NAMES, RESET_POSE  # noqa: E402
 
 SRC = os.path.join(ROOT, "source_model", "robot.json")
 MODEL_DIR = os.path.join(ROOT, "model")
 ROS_PKG = os.path.join(ROOT, "ros2_ws", "src", "yanshee_description")
+FOOT_CLEARANCE = 0.0005  # m between the lowest vertex of the reset pose and the floor at spawn
 
 # Webots solid names -> YanAPI servo names (the Webots file has one typo).
 SOLID_FIX = {"LeftAndleFB": "LeftAnkleFB"}
 DEVICE_TYPES = {"Camera", "LED", "DistanceSensor", "Accelerometer", "Gyro", "Compass", "InertialUnit"}
 
-# Servo model (assumed; tune once real data exists). See README "Physics parameters".
+# Servo model (assumed; tune once real data exists). See README sections 11 and 13.
 SERVO_KP = 8.0          # N*m/rad position gain
 SERVO_TORQUE = 2.0      # N*m stall torque limit
 SERVO_DAMPING = 0.08    # N*m*s/rad
@@ -89,8 +94,25 @@ class Body:
         self.devices = []          # (type, name, world 4x4, node)
 
 
-def parse():
-    data = json.load(open(SRC))
+def load_source(path):
+    """Read the Webots JSON export, with clear messages for a missing file or a Git LFS pointer."""
+    if not os.path.exists(path):
+        sys.exit(f"error: {path} not found. It is stored with Git LFS: run 'git lfs install && git lfs pull'.")
+    with open(path, "rb") as f:
+        head = f.read(64)
+    if head.startswith(b"version https://git-lfs"):
+        rel = os.path.relpath(path, ROOT) if os.path.abspath(path).startswith(ROOT + os.sep) else path
+        sys.exit(f"error: {path} is a Git LFS pointer, not the model. Run 'git lfs checkout {rel}'"
+                 " (or 'git lfs install && git lfs pull' if the object was never downloaded).")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except ValueError as e:
+        sys.exit(f"error: {path} is not valid JSON ({e}).")
+
+
+def parse(src=SRC):
+    data = load_source(src)
     root = Body("base_link", None, np.zeros(3))
     bodies = [root]
 
@@ -191,9 +213,11 @@ def fmt(v):
     return " ".join(f"{x:.6g}" for x in v)
 
 
-def build_mjcf(bodies, files):
-    # spawn height: lowest vertex of the standing pose rests 0.5 mm above the floor
-    z0 = 0.0005 - min(v[0][:, 2].min() for b in bodies for parts in b.meshes.values() for v in parts)
+def build_mjcf(bodies, files, z0=None):
+    """MJCF text. z0 = spawn height of base_link; default: the saved pose's lowest vertex FOOT_CLEARANCE above
+    the floor (main() then corrects it for RESET_POSE with spawn_height())."""
+    if z0 is None:
+        z0 = FOOT_CLEARANCE - min(v[0][:, 2].min() for b in bodies for parts in b.meshes.values() for v in parts)
     children = {}
     for b in bodies[1:]:
         children.setdefault(b.parent.name, []).append(b)
@@ -271,8 +295,9 @@ def build_mjcf(bodies, files):
             if t == "DistanceSensor":
                 L.append(f'    <rangefinder name="{name}" site="{name}" cutoff="1.5"/>')
     L.append('  </sensor>')
-    qpos = f"0 0 {z0:.5f} 1 0 0 0 " + fmt([b.joint["ref"] for b in bodies[1:]])
-    ctrl = fmt([b.joint["ref"] for b in order])
+    reset = {n: math.radians(d) for n, d in RESET_POSE.items()}  # keyframe = servos.RESET_POSE
+    qpos = f"0 0 {z0:.5f} 1 0 0 0 " + fmt([reset[b.name] for b in bodies[1:]])
+    ctrl = fmt([reset[b.name] for b in order])
     L.append('  <keyframe>')
     L.append(f'    <key name="reset" qpos="{qpos}" ctrl="{ctrl}"/>')
     L.append('  </keyframe>')
@@ -300,6 +325,69 @@ SCENE = """<mujoco model="yanshee scene">
   </worldbody>
 </mujoco>
 """
+
+
+def spawn_height(scene_path):
+    """base_link height that puts the lowest mesh vertex of the reset keyframe FOOT_CLEARANCE above the floor."""
+    import mujoco
+    m = mujoco.MjModel.from_xml_path(scene_path)
+    d = mujoco.MjData(m)
+    mujoco.mj_resetDataKeyframe(m, d, m.key("reset").id)
+    mujoco.mj_kinematics(m, d)
+    low = math.inf
+    for g in range(m.ngeom):
+        if m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
+            continue
+        mid = m.geom_dataid[g]
+        V = m.mesh_vert[m.mesh_vertadr[mid]:m.mesh_vertadr[mid] + m.mesh_vertnum[mid]]
+        low = min(low, (V @ d.geom_xmat[g].reshape(3, 3).T + d.geom_xpos[g])[:, 2].min())
+    return d.qpos[2] + FOOT_CLEARANCE - low
+
+
+LAUNCH = '''"""RViz view of the Yanshee URDF with a slider per servo.
+
+Generated by tools/build_models.py (RESET_POSE_RAD comes from yanshee_sim/servos.py). Do not edit by hand.
+
+    ros2 launch yanshee_description display.launch.py            # sliders start in the reset pose
+    ros2 launch yanshee_description display.launch.py gui:=false # e.g. when another node publishes /joint_states
+
+Slider values are radians; servo degrees = rad * 57.2958 (the same numbers YanAPI uses).
+"""
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+RESET_POSE_RAD = {
+%s
+}
+
+
+def generate_launch_description():
+    share = get_package_share_directory("yanshee_description")
+    with open(os.path.join(share, "urdf", "yanshee.urdf")) as f:
+        urdf = f.read()
+    gui = LaunchConfiguration("gui")
+    rviz = LaunchConfiguration("rviz")
+    return LaunchDescription([
+        DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument("rviz", default_value="true"),
+        Node(package="robot_state_publisher", executable="robot_state_publisher",
+             parameters=[{"robot_description": urdf}]),
+        Node(package="joint_state_publisher_gui", executable="joint_state_publisher_gui",
+             parameters=[{"zeros": RESET_POSE_RAD}], condition=IfCondition(gui)),
+        Node(package="rviz2", executable="rviz2", arguments=["-d", os.path.join(share, "rviz", "yanshee.rviz")],
+             condition=IfCondition(rviz)),
+    ])
+'''
+
+
+def build_launch():
+    return LAUNCH % "\n".join(f'    "{n}": {math.radians(RESET_POSE[n]):.4f},' for n in NAMES)
 
 
 def build_urdf(bodies, files):
@@ -354,23 +442,36 @@ def build_urdf(bodies, files):
 
 
 def main():
-    bodies = parse()
+    ap = argparse.ArgumentParser(
+        description="Regenerate model/ (MuJoCo MJCF + meshes) and the ROS 2 package (URDF, meshes, display launch "
+                    "file) from the Webots export. The reset keyframe comes from yanshee_sim/servos.py RESET_POSE.")
+    ap.add_argument("--src", default=SRC, help="Webots JSON export (default: source_model/robot.json, Git LFS)")
+    args = ap.parse_args()
+    bodies = parse(args.src)
     ros_meshes = os.path.join(ROS_PKG, "meshes")
     mj_meshes = os.path.join(MODEL_DIR, "meshes")
     for d in (ros_meshes, mj_meshes):
         os.makedirs(d, exist_ok=True)
     files = export_meshes(bodies, [mj_meshes, ros_meshes])
-    with open(os.path.join(MODEL_DIR, "yanshee.xml"), "w") as f:
-        f.write(build_mjcf(bodies, files))
     with open(os.path.join(MODEL_DIR, "scene.xml"), "w") as f:
         f.write(SCENE)
+    mjcf = os.path.join(MODEL_DIR, "yanshee.xml")
+    with open(mjcf, "w") as f:
+        f.write(build_mjcf(bodies, files))
+    z0 = spawn_height(os.path.join(MODEL_DIR, "scene.xml"))  # rest the RESET_POSE feet on the floor
+    with open(mjcf, "w") as f:
+        f.write(build_mjcf(bodies, files, z0))
+    os.makedirs(os.path.join(ROS_PKG, "launch"), exist_ok=True)
+    with open(os.path.join(ROS_PKG, "launch", "display.launch.py"), "w") as f:
+        f.write(build_launch())
     os.makedirs(os.path.join(ROS_PKG, "urdf"), exist_ok=True)
     with open(os.path.join(ROS_PKG, "urdf", "yanshee.urdf"), "w") as f:
         f.write(build_urdf(bodies, files))
     total = sum(b.mass for b in bodies)
-    print(f"bodies: {len(bodies)}  joints: {len(bodies) - 1}  total mass: {total:.3f} kg")
+    print(f"bodies: {len(bodies)}  joints: {len(bodies) - 1}  total mass: {total:.3f} kg  spawn z {z0:.5f} m")
     for b in bodies[1:]:
-        print(f"  {IDS[b.name]:2d} {b.name:18s} saved pose {math.degrees(b.joint['ref']):7.2f} deg  axis {fmt(b.joint['axis'])}")
+        print(f"  {IDS[b.name]:2d} {b.name:18s} saved pose {math.degrees(b.joint['ref']):7.2f} deg"
+              f"  reset {RESET_POSE[b.name]:3d} deg  axis {fmt(b.joint['axis'])}")
 
 
 if __name__ == "__main__":

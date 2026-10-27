@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Yanshee Relay</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-mode="sim">
+
+<header class="topbar" id="topbar">
+  <div class="brand">
+    <img src="favicon.svg" alt="" width="28" height="28">
+    <span class="brand-name">Yanshee<span class="brand-sub">relay</span></span>
+  </div>
+
+  <div class="seg mode-seg" role="radiogroup" aria-label="Relay mode" id="modeSeg">
+    <button type="button" role="radio" data-mode="sim" aria-checked="true" title="Commands go to the simulator only">Sim</button>
+    <button type="button" role="radio" data-mode="robot" aria-checked="false" title="Commands go to the real robot; the sim shows its readback">Robot</button>
+    <button type="button" role="radio" data-mode="both" aria-checked="false" title="Commands go to the simulator and the robot">Both</button>
+  </div>
+
+  <form class="connect" id="connectForm" autocomplete="off">
+    <span class="dot" id="robotDot" aria-hidden="true"></span>
+    <input id="ipInput" type="text" inputmode="decimal" spellcheck="false" placeholder="Robot IP"
+           aria-label="Robot IP address (optionally :port)">
+    <button type="submit" class="btn" id="connectBtn">Connect</button>
+    <button type="button" class="btn ghost" id="disconnectBtn" hidden>Disconnect</button>
+  </form>
+
+  <div class="batteries" aria-label="Battery levels">
+    <span class="batt" id="simBatt" title="Simulated battery"><span class="batt-label">Sim</span><span class="batt-bar"><i></i></span><b>--%</b></span>
+    <span class="batt" id="robotBatt" title="Robot battery"><span class="batt-label">Robot</span><span class="batt-bar"><i></i></span><b>--</b></span>
+  </div>
+
+  <div class="activity" id="activity" aria-live="polite">
+    <span class="act-kind" id="actKind">Idle</span>
+    <span class="act-name" id="actName"></span>
+    <button type="button" class="btn small ghost act-pause" id="actPause" hidden title="Pause / resume the robot built-in action (STOP ends it)">Pause</button>
+    <span class="act-progress"><i id="actBar"></i></span>
+  </div>
+
+  <div class="top-actions">
+    <button type="button" class="btn" id="resetBtn" title="Stand in the reset pose (stands the sim up if it fell)">Reset</button>
+    <button type="button" class="stop" id="stopBtn" title="Stop everything (Esc)">STOP<small>Esc</small></button>
+  </div>
+</header>
+
+<div class="banner" id="offlineBanner" role="alert" hidden>
+  <strong id="offlineTitle">Server connection lost.</strong> <span id="offlineText">Reconnecting...</span>
+</div>
+
+<main class="layout">
+  <!-- live view -->
+  <section class="live card" aria-label="Live view">
+    <div class="live-head">
+      <div class="seg cam-seg" role="radiogroup" aria-label="Camera" id="camSeg"></div>
+    </div>
+    <div class="viewport" id="viewport">
+      <img id="stream" alt="" aria-label="Live camera view">
+      <div class="vp-placeholder" id="vpPlaceholder">Connecting to the video stream...</div>
+      <span class="vp-badge" id="vpSource">Simulation</span>
+      <span class="vp-fallen" id="vpFallen" hidden>Fallen over - press Reset</span>
+    </div>
+    <div class="live-foot">
+      <div class="leds" aria-label="LEDs">
+        <span class="led-ind" id="ledButton" title="Chest LED"><i></i>Chest</span>
+        <span class="led-ind" id="ledCamera" title="Eye LEDs"><i></i><i></i>Eyes</span>
+      </div>
+      <span class="tilt" id="tiltInfo" title="Torso tilt in the simulator">tilt --</span>
+      <span class="robot-info" id="robotInfo">Robot: not connected</span>
+    </div>
+    <p class="vp-note" id="rendererError" hidden></p>
+  </section>
+
+  <!-- tabs -->
+  <section class="panel" aria-label="Controls">
+    <nav class="tabs" role="tablist" id="tabs">
+      <a role="tab" href="#motion" data-tab="motion">Motion</a>
+      <a role="tab" href="#servos" data-tab="servos">Servos &amp; recorder</a>
+      <a role="tab" href="#settings" data-tab="settings">Settings &amp; sensors</a>
+      <a role="tab" href="#voice" data-tab="voice">Voice &amp; vision</a>
+      <a role="tab" href="#log" data-tab="log">Log <span class="tab-badge" id="logBadge" hidden>0</span></a>
+    </nav>
+
+    <!-- ===== Motion control ===== -->
+    <div class="tabpanel" id="tab-motion" role="tabpanel" data-panel="motion">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Walk</h2>
+          <div class="walk">
+            <div class="dpad" id="dpad" aria-label="Hold a direction to walk">
+              <button type="button" data-dir="fl" aria-label="Forward left" class="diag">&#8598;</button>
+              <button type="button" data-dir="f" aria-label="Forward">&#9650;</button>
+              <button type="button" data-dir="fr" aria-label="Forward right" class="diag">&#8599;</button>
+              <button type="button" data-dir="l" aria-label="Side step left">&#9664;</button>
+              <button type="button" class="dpad-stop" id="dpadStop" aria-label="Stop walking">&#9632;</button>
+              <button type="button" data-dir="r" aria-label="Side step right">&#9654;</button>
+              <button type="button" data-dir="bl" aria-label="Backward left" class="diag">&#8601;</button>
+              <button type="button" data-dir="b" aria-label="Backward">&#9660;</button>
+              <button type="button" data-dir="br" aria-label="Backward right" class="diag">&#8600;</button>
+            </div>
+            <div class="walk-side">
+              <label class="field">Speed <output id="walkSpeedOut">3</output>
+                <input type="range" id="walkSpeed" min="1" max="5" step="1" value="3">
+              </label>
+              <label class="field">Step period
+                <select id="walkPeriod">
+                  <option value="1" selected>1 (quick)</option><option value="2">2</option><option value="3">3</option>
+                  <option value="4">4</option><option value="5">5 (slow)</option>
+                </select>
+              </label>
+              <label class="switch" title="Swing the arms while walking (robot gait)"><input type="checkbox" id="walkWave"><span></span>Arm swing</label>
+              <div class="turns">
+                <button type="button" class="btn" data-turn="left">&#8634; Turn left</button>
+                <button type="button" class="btn" data-turn="right">Turn right &#8635;</button>
+              </div>
+              <p class="hint">Hold to walk, release to stop (the walk also stops by itself if this page loses the server for 1.5 s). Keys: arrows or WASD while this tab is open. <kbd>Esc</kbd> stops everything.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Get up &amp; dances</h2>
+          <div class="btn-row" id="getupRow"></div>
+          <h3>Dances</h3>
+          <div class="tiles tiles-big" id="danceGrid"></div>
+          <h3>Music</h3>
+          <div class="btn-row">
+            <select id="musicSelect" aria-label="Song"></select>
+            <button type="button" class="btn" id="musicPlay">Play</button>
+            <button type="button" class="btn ghost" id="musicStop">Stop music</button>
+          </div>
+          <p class="hint" id="musicNote"></p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Built-in actions</h2>
+          <div class="action-opts">
+            <label class="field inline">Speed
+              <select id="actSpeed">
+                <option>very slow</option><option>slow</option><option selected>normal</option><option>fast</option><option>very fast</option>
+              </select>
+            </label>
+            <label class="field inline">Repeat <input type="number" id="actRepeat" min="1" max="100" value="1"></label>
+            <input type="search" id="actSearch" placeholder="Search actions" aria-label="Search actions">
+          </div>
+        </div>
+        <div class="chips" id="catChips" role="tablist" aria-label="Action categories"></div>
+        <div class="tiles" id="actionGrid"><p class="empty">Loading actions...</p></div>
+        <p class="hint" id="actionNote"></p>
+      </div>
+    </div>
+
+    <!-- ===== Servos & recorder ===== -->
+    <div class="tabpanel" id="tab-servos" role="tabpanel" data-panel="servos" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Servos</h2>
+          <div class="action-opts">
+            <label class="field inline">Move time <input type="number" id="servoRuntime" min="200" max="4000" step="50" value="400"> ms</label>
+            <label class="switch"><input type="checkbox" id="servoFollow" checked><span></span>Follow readback</label>
+            <button type="button" class="btn ghost" id="allLimp" title="Make every servo limp so you can pose the robot by hand">All limp</button>
+            <button type="button" class="btn ghost" id="allHold" title="Hold every servo where it is">All hold</button>
+          </div>
+        </div>
+        <div class="servo-groups" id="servoGroups"></div>
+        <p class="hint">Sliders send through the safety gate (limits, self-collision, speed cap). Readback: <span class="rb-sim">sim</span> / <span class="rb-robot">robot</span>. Limp = PRP posing by hand.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Recorder</h2>
+          <div class="action-opts">
+            <label class="field inline">Runtime <input type="number" id="capRuntime" min="200" max="4000" step="50" value="600"> ms</label>
+            <label class="field inline">Hold <input type="number" id="capHold" min="0" max="60000" step="50" value="0"> ms</label>
+            <button type="button" class="btn primary" id="captureBtn">Capture frame</button>
+            <button type="button" class="btn ghost" id="addPauseBtn" title="Add a frame without angles (a pause)">Add pause</button>
+          </div>
+        </div>
+
+        <div class="rec-meta">
+          <label class="field">Name <input type="text" id="recName" placeholder="my_motion" spellcheck="false" pattern="[A-Za-z0-9_\-]+"></label>
+          <label class="field grow">Description <input type="text" id="recDesc" placeholder="What it does"></label>
+          <label class="switch"><input type="checkbox" id="recEndReset" checked><span></span>End in reset pose</label>
+          <label class="field inline">Speed <input type="number" id="recSpeed" min="0.25" max="3" step="0.25" value="1"></label>
+        </div>
+
+        <ol class="keyframes" id="keyframes"></ol>
+        <p class="empty" id="kfEmpty">No keyframes yet. Pose the robot (sliders or limp + by hand) and press <b>Capture frame</b>.</p>
+
+        <div class="btn-row rec-actions">
+          <button type="button" class="btn" id="recNew">New</button>
+          <button type="button" class="btn" id="recCheck">Check</button>
+          <button type="button" class="btn" id="recPreview" title="Play in the simulator only">Preview in sim</button>
+          <button type="button" class="btn primary" id="recPlay" title="Play on the current relay target">Play on target</button>
+          <button type="button" class="btn" id="recSave">Save</button>
+        </div>
+        <div class="report" id="checkReport" hidden></div>
+
+        <h3>Motion files <button type="button" class="btn small ghost" id="motionsRefresh">Refresh</button></h3>
+        <div class="file-list" id="motionList"><p class="empty">Loading...</p></div>
+      </div>
+    </div>
+
+    <!-- ===== Settings & sensors ===== -->
+    <div class="tabpanel" id="tab-settings" role="tabpanel" data-panel="settings" hidden>
+      <div class="grid-2">
+        <div class="card">
+          <h2>Sound &amp; behaviour</h2>
+          <label class="field">Volume <output id="volumeOut">50</output>
+            <input type="range" id="volume" min="0" max="100" step="5" value="50">
+          </label>
+          <div class="field">Language
+            <div class="seg" id="langSeg" role="radiogroup" aria-label="Language">
+              <button type="button" role="radio" data-lang="en">English</button>
+              <button type="button" role="radio" data-lang="zh">Chinese</button>
+            </div>
+          </div>
+          <label class="switch big"><input type="checkbox" id="fallMgmt"><span></span>Fall management (robot gets up by itself)</label>
+          <div class="field">Simulated battery
+            <div class="btn-row"><span class="big-num" id="simBattBig">--%</span>
+              <button type="button" class="btn" id="chargeBtn">Charge sim battery</button></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>LEDs</h2>
+          <div class="led-set" data-led="button">
+            <h3>Chest</h3>
+            <div class="swatches" role="radiogroup" aria-label="Chest LED colour"></div>
+            <div class="seg small modes" role="radiogroup" aria-label="Chest LED mode"></div>
+          </div>
+          <div class="led-set" data-led="camera">
+            <h3>Eyes</h3>
+            <div class="swatches" role="radiogroup" aria-label="Eye LED colour"></div>
+            <div class="seg small modes" role="radiogroup" aria-label="Eye LED mode"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Motion sensor (IMU)</h2>
+          <div class="action-opts">
+            <div class="seg small" id="imuSeries" role="radiogroup" aria-label="Series">
+              <button type="button" role="radio" data-series="euler" aria-checked="true">Angles (deg)</button>
+              <button type="button" role="radio" data-series="gyro" aria-checked="false">Gyro (rad/s)</button>
+            </div>
+            <div class="seg small" id="imuTarget" role="radiogroup" aria-label="Target">
+              <button type="button" role="radio" data-target="sim" aria-checked="true">Sim</button>
+              <button type="button" role="radio" data-target="robot" aria-checked="false">Robot</button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="imuChart" height="180" aria-label="Rolling IMU chart, last 60 seconds"></canvas>
+          <div class="legend"><span class="lx">x / roll</span><span class="ly">y / pitch</span><span class="lz">z / yaw</span></div>
+        </div>
+        <div class="imu-nums" id="imuNums"></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h2>Add-on sensors</h2>
+          <div id="addons" class="kv-wrap"><p class="empty">Open this tab to read sensors.</p></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Info</h2><button type="button" class="btn small ghost" id="infoRefresh">Refresh</button></div>
+          <div id="infoBox" class="kv-wrap"><p class="empty">Loading...</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Voice & vision ===== -->
+    <div class="tabpanel" id="tab-voice" role="tabpanel" data-panel="voice" hidden>
+      <div class="grid-2">
+        <div class="card">
+          <h2>Speak</h2>
+          <textarea id="ttsText" rows="3" maxlength="500" placeholder="Type what Yanshee should say"></textarea>
+          <div class="btn-row phrases" id="phrases"></div>
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="ttsBtn">Speak</button>
+            <button type="button" class="btn ghost" id="ttsStopBtn">Stop speaking</button>
+          </div>
+          <p class="hint" id="ttsNote">In Sim mode this browser speaks the text. Speech recognition (ASR) on the robot understands Chinese only.</p>
+        </div>
+        <div class="card">
+          <h2>Photo</h2>
+          <div class="btn-row">
+            <button type="button" class="btn primary" id="photoBtn">Take photo</button>
+            <select id="photoRes" aria-label="Photo resolution (robot camera)" title="Resolution of the robot's camera (the simulator renders at its own size)">
+              <option>320x240</option><option selected>640x480</option><option>1280x720</option><option>1920x1080</option>
+            </select>
+            <a class="btn ghost" id="photoSave" download hidden>Save</a>
+          </div>
+          <div class="photo-box" id="photoBox"><p class="empty">No photo yet.</p></div>
+          <h3>Face entry</h3>
+          <form class="btn-row" id="faceForm">
+            <input type="text" id="faceName" placeholder="Person's name" aria-label="Name for face entry">
+            <button type="submit" class="btn">Enrol face</button>
+          </form>
+          <p class="hint">Robot only: the person looks into the robot's eyes while it captures.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Vision</h2>
+          <label class="field inline">Timeout <input type="number" id="visionTimeout" min="1" max="30" value="8"> s</label>
+        </div>
+        <div class="tiles" id="visionGrid"></div>
+        <div class="results" id="visionResults"></div>
+      </div>
+    </div>
+
+    <!-- ===== Log ===== -->
+    <div class="tabpanel" id="tab-log" role="tabpanel" data-panel="log" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>Event log</h2>
+          <div class="action-opts">
+            <div class="seg small" id="logFilter" role="radiogroup" aria-label="Level filter">
+              <button type="button" role="radio" data-level="all" aria-checked="true">All</button>
+              <button type="button" role="radio" data-level="warn" aria-checked="false">Warnings</button>
+              <button type="button" role="radio" data-level="error" aria-checked="false">Errors</button>
+            </div>
+            <input type="search" id="logSearch" placeholder="Filter" aria-label="Filter log">
+            <button type="button" class="btn small ghost" id="logClear">Clear view</button>
+          </div>
+        </div>
+        <ol class="log" id="logList"></ol>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<dialog id="confirmDlg">
+  <form method="dialog">
+    <h2 id="confirmTitle">Are you sure?</h2>
+    <p id="confirmBody"></p>
+    <div class="btn-row end">
+      <button type="button" class="btn dlg-stop" id="confirmStop" title="Stop everything now (Esc also stops)">STOP</button>
+      <button value="cancel" class="btn ghost" id="confirmCancel">Cancel</button>
+      <button value="ok" class="btn primary" id="confirmOk">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

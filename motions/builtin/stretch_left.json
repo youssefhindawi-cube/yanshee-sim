@@ -1,0 +1,22 @@
+{
+  "name": "stretch_left",
+  "description": "Stretch the left arm out to the side, then up (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "LeftShoulderFlex": 90,
+        "LeftElbowFlex": 16
+      },
+      "runtime": 800,
+      "hold": 400
+    },
+    {
+      "angles": {
+        "LeftShoulderFlex": 120
+      },
+      "runtime": 600,
+      "hold": 600
+    }
+  ],
+  "end_in_reset": true
+}

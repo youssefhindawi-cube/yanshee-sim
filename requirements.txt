@@ -1,6 +1,14 @@
-mujoco>=3.1
+# Simulator (needs the MjSpec editing API; tested with mujoco 3.8)
+mujoco>=3.3,<4
 numpy
-# real robot only (imported by YanAPI.py)
+# Web GUI (scripts/web_gui.py); httpx is only for the server tests (FastAPI TestClient)
+fastapi>=0.110
+uvicorn>=0.29
+websockets
+Pillow
+httpx
+# Real robot: yanshee_sim/rest.py needs nothing extra. These are only for RealRobot.api
+# (the official YanAPI.py module, advanced use)
 requests
 nest_asyncio
 opencv-python

@@ -1,0 +1,53 @@
+{
+  "name": "come_on_right",
+  "description": "Hold the right arm forward and beckon (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderRoll": 25,
+        "RightShoulderFlex": 130,
+        "RightElbowFlex": 164
+      },
+      "runtime": 800,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 100
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 160
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 100
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 160
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 100
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 164
+      },
+      "runtime": 350,
+      "hold": 200
+    }
+  ],
+  "end_in_reset": true
+}

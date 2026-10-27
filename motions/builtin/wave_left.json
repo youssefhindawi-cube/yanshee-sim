@@ -1,0 +1,53 @@
+{
+  "name": "wave_left",
+  "description": "Raise the left arm and wave (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "LeftShoulderFlex": 150,
+        "LeftElbowFlex": 90,
+        "NeckLR": 75
+      },
+      "runtime": 800,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 50
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 100
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 50
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 100
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 50
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "LeftElbowFlex": 90
+      },
+      "runtime": 300,
+      "hold": 200
+    }
+  ],
+  "end_in_reset": true
+}

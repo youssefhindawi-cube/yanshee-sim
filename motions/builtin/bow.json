@@ -1,0 +1,17 @@
+{
+  "name": "bow",
+  "description": "Bow: lean the torso forward and come back up (approximate sim version of the robot's built-in)",
+  "frames": [
+    {
+      "angles": {
+        "RightHipFB": 51,
+        "LeftHipFB": 129,
+        "RightShoulderRoll": 70,
+        "LeftShoulderRoll": 110
+      },
+      "runtime": 900,
+      "hold": 800
+    }
+  ],
+  "end_in_reset": true
+}
