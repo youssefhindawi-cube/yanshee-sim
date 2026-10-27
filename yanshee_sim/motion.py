@@ -74,45 +74,55 @@ def play(robot, motion, speed=1.0, on_frame=None):
         robot.reset(runtime=1000)
 
 
-def self_collisions(motion, samples_per_frame=8, scene=None):
-    """Sweep the motion kinematically in MuJoCo and report body pairs that come into contact.
+class CollisionChecker:
+    """Kinematic self-collision test for single poses. Compile once, query many times (about 1 ms per pose).
 
-    Pairs already touching in the reset pose (neighbouring parts of the convex hulls) are ignored,
-    so a report means two parts of the robot move into each other during this motion.
+    Pairs already touching in the reset pose are ignored, so a hit means two parts of the robot
+    move into each other.
     """
-    import mujoco
-    from .robot import SCENE
 
-    spec = mujoco.MjSpec.from_file(scene or SCENE)
-    for g in spec.geoms:  # let robot collision hulls collide with each other (must be set before compiling)
-        if g.group == 3:
-            g.conaffinity = 1
-    m = spec.compile()
-    d = mujoco.MjData(m)
-    key = m.key("reset").id
-    qadr = {n: m.jnt_qposadr[m.joint(n).id] for n in LIMITS}
+    def __init__(self, scene=None):
+        import mujoco
+        from .robot import SCENE
+        self._mj = mujoco
+        spec = mujoco.MjSpec.from_file(scene or SCENE)
+        for g in spec.geoms:  # let robot collision hulls collide with each other (must be set before compiling)
+            if g.group == 3:
+                g.conaffinity = 1
+        self.model = spec.compile()
+        self.data = mujoco.MjData(self.model)
+        self._key = self.model.key("reset").id
+        self._qadr = {n: self.model.jnt_qposadr[self.model.joint(n).id] for n in LIMITS}
+        self.baseline = set()
+        self.baseline = self.contacts(RESET_POSE)
 
-    def pairs_at(pose):
-        mujoco.mj_resetDataKeyframe(m, d, key)
+    def contacts(self, pose):
+        """Body pairs in contact for a {servo: deg} pose (unnamed servos stay in the reset pose)."""
+        m, d = self.model, self.data
+        self._mj.mj_resetDataKeyframe(m, d, self._key)
         for n, deg in pose.items():
-            d.qpos[qadr[n]] = math.radians(deg)
+            if n in self._qadr:
+                d.qpos[self._qadr[n]] = math.radians(deg)
         d.qpos[2] += 0.2  # lift off the floor: only robot-robot contacts matter here
-        mujoco.mj_forward(m, d)
+        self._mj.mj_forward(m, d)
         out = set()
         for c in d.contact[:d.ncon]:
-            b1, b2 = m.body(m.geom_bodyid[c.geom1]).name, m.body(m.geom_bodyid[c.geom2]).name
             if c.dist < -0.002:  # ignore grazing contacts under 2 mm
+                b1, b2 = m.body(m.geom_bodyid[c.geom1]).name, m.body(m.geom_bodyid[c.geom2]).name
                 out.add(tuple(sorted((b1, b2))))
-        return out
+        return out - self.baseline
 
-    baseline = pairs_at(RESET_POSE)
+
+def self_collisions(motion, samples_per_frame=8, scene=None):
+    """Sweep a motion kinematically and report (frame, fraction, (body, body)) for every self-collision."""
+    checker = CollisionChecker(scene)
     report, pose = [], dict(RESET_POSE)
     for i, fr in enumerate(motion["frames"]):
         target = {**pose, **{n: d for n, d in fr["angles"].items() if n in LIMITS}}
         for k in range(1, samples_per_frame + 1):
             s = k / samples_per_frame
             p = {n: pose[n] + (target[n] - pose[n]) * s for n in pose}
-            for pair in pairs_at(p) - baseline:
+            for pair in checker.contacts(p):
                 report.append((i, round(s, 2), pair))
         pose = target
     return report

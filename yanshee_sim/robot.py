@@ -73,7 +73,8 @@ class Robot:
 class SimRobot(Robot):
     """MuJoCo backend. Physics runs in a background thread at real time (or on demand with realtime=False)."""
 
-    def __init__(self, viewer=True, realtime=True, fixed_base=False, scene=SCENE):
+    def __init__(self, viewer=True, realtime=True, fixed_base=False, manual=False, scene=SCENE):
+        """manual=True: servo targets come from the viewer's Control sliders instead of set_servos_angles."""
         import mujoco
         self._mj = mujoco
         if fixed_base:
@@ -82,24 +83,21 @@ class SimRobot(Robot):
             for j in list(base.joints):
                 spec.delete(j)
             base.pos = [0, 0, 0.1]  # hang 10 cm above the floor
+            for k in spec.keys:  # the keyframe loses the 7 free-joint values
+                k.qpos = list(k.qpos)[7:]
             self.model = spec.compile()
         else:
             self.model = mujoco.MjModel.from_xml_path(scene)
         self.data = mujoco.MjData(self.model)
         m = self.model
-        key = m.key("reset").id
-        if fixed_base:
-            for n in NAMES:
-                self.data.qpos[m.jnt_qposadr[m.joint(n).id]] = m.key_qpos[key][m.jnt_qposadr[m.joint(n).id] + 7]
-            self.data.ctrl[:] = m.key_ctrl[key]
-        else:
-            mujoco.mj_resetDataKeyframe(m, self.data, key)
+        mujoco.mj_resetDataKeyframe(m, self.data, m.key("reset").id)
         mujoco.mj_forward(m, self.data)
         self._act = {n: m.actuator(n).id for n in NAMES}
         self._qadr = {n: m.jnt_qposadr[m.joint(n).id] for n in NAMES}
         # per actuator: (start rad, end rad, t_start, t_end)
         self._moves = {n: (self.data.ctrl[i], self.data.ctrl[i], 0.0, 0.0) for n, i in self._act.items()}
         self._lock = threading.RLock()
+        self.manual = manual
         self._viewer = None
         self.realtime = realtime
         if viewer:
@@ -113,7 +111,7 @@ class SimRobot(Robot):
     # -- physics --------------------------------------------------------------
     def _step(self):
         t = self.data.time
-        for n, (a, b, t0, t1) in self._moves.items():
+        for n, (a, b, t0, t1) in ({} if self.manual else self._moves).items():
             s = 1.0 if t >= t1 else max(0.0, (t - t0) / (t1 - t0))
             self.data.ctrl[self._act[n]] = a + (b - a) * s  # linear profile, like the servo's timed move
         self._mj.mj_step(self.model, self.data)
@@ -164,6 +162,23 @@ class SimRobot(Robot):
                     self._viewer.sync()
 
     # -- simulator-only helpers -------------------------------------------------
+    def get_target_angles(self):
+        """Current servo targets in degrees (what the Control sliders show in manual mode)."""
+        with self._lock:
+            return {n: math.degrees(self.data.ctrl[i]) for n, i in self._act.items()}
+
+    def jump_to(self, angles):
+        """Teleport joints and targets to a {servo: deg} pose (no motion). Use while the robot is held (fixed_base)."""
+        with self._lock:
+            for n, deg in angles.items():
+                if n in self._act:
+                    rad = math.radians(deg)
+                    self.data.qpos[self._qadr[n]] = rad
+                    self.data.ctrl[self._act[n]] = rad
+                    self._moves[n] = (rad, rad, 0.0, 0.0)
+            self.data.qvel[:] = 0
+            self._mj.mj_forward(self.model, self.data)
+
     def torso_tilt_deg(self):
         """Angle between the torso's up axis and world up (0 = upright). Useful to detect falls."""
         with self._lock:
