@@ -49,9 +49,12 @@ def test_round_trip_and_limits():
     assert hts.build(mo) == hts.build(WAVE)  # stable
     wild = {"frames": [{"angles": {"NeckLR": 200.4, "RightHipLR": -3}, "runtime": 9000},
                        {"angles": {"NeckLR": 90.6}, "runtime": 50}]}
-    back = hts.parse(hts.build(wild))
-    assert back["frames"][0]["angles"] == {"NeckLR": 180, "RightHipLR": 0} and back["frames"][0]["runtime"] == 4000
+    back = hts.parse(hts.build(wild))  # the writer keeps 0-180; the reader clamps to the servo limits
+    assert back["frames"][0]["angles"] == {"NeckLR": 165, "RightHipLR": 0} and back["frames"][0]["runtime"] == 4000
     assert back["frames"][1]["angles"] == {"NeckLR": 91} and back["frames"][1]["runtime"] == 200
+    assert back["clamped"] == ["frame 1: NeckLR 180 -> 165"] and "1 angle(s) clamped" in back["description"]
+    app = hts.parse(hts.build({"frames": [{"angles": {"LeftHipFB": 171}, "runtime": 600}]}))  # as app files do
+    assert app["frames"][0]["angles"] == {"LeftHipFB": 170} and not motion.validate(app)[0]
     assert _raises(lambda: hts.build({"frames": []}))
 
 

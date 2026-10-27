@@ -445,8 +445,8 @@ yanshee_sim.hts FILE.hts` prints the frames; `python3 -m yanshee_sim.hts motion.
 way. The format (33-byte records, 20 ms ticks, 0xFF = servo not moved) is documented in `yanshee_sim/hts.py`
 and was checked against 46 app-made files. There is no REST download of motions; copy them from the robot with
 `scp pi@ROBOT:/home/pi/Documents/motions/NAME.hts .` (the firmware's folder for uploaded motions). App-made
-files can carry angles a degree past the documented limits (LeftHipFB 171): `validate()` reports them and
-the simulator clamps them in non-strict mode.
+files can carry angles a degree past the documented limits (LeftHipFB 171): loading clamps them to the limits
+and lists them in the motion's `clamped` field and description.
 
 ---
 

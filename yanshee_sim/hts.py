@@ -21,7 +21,7 @@ import os
 import struct
 import sys
 
-from .servos import NAMES, RESET_POSE
+from .servos import LIMITS, NAMES, RESET_POSE
 
 RECORD = 33
 TICK_MS = 20
@@ -39,7 +39,7 @@ def parse(data, name="motion"):
     if len(data) < 3 * RECORD or len(data) % RECORD:
         raise HtsError(f"{name}: size {len(data)} is not a multiple of {RECORD} bytes with header and trailer")
     n = len(data) // RECORD - 2
-    frames, total = [], 0
+    frames, total, clamped = [], 0, []
     for i in range(1, n + 1):
         f = data[i * RECORD:(i + 1) * RECORD]
         if f[0] != 0xFB or f[1] != 0xBF or f[32] != 0xED:
@@ -47,12 +47,20 @@ def parse(data, name="motion"):
         if sum(f[2:31]) & 0xFF != f[31]:
             raise HtsError(f"{name}: frame {i} checksum mismatch")
         run, tot = f[28], (f[29] << 8) | f[30]
-        angles = {n: a for n, a in zip(NAMES, f[8:25]) if a != 0xFF}
+        angles = {}
+        for servo, a in zip(NAMES, f[8:25]):
+            if a == 0xFF:
+                continue
+            lo, hi = LIMITS[servo]
+            angles[servo] = min(max(a, lo), hi)
+            if angles[servo] != a:  # app-made files go a degree past the documented limits (LeftHipFB 171)
+                clamped.append(f"frame {i}: {servo} {a} -> {angles[servo]}")
         frames.append({"angles": angles, "runtime": run * TICK_MS, "hold": max(tot - run, 0) * TICK_MS})
         total += tot * TICK_MS
     trailer_ms = struct.unpack("<I", data[-4:])[0]
-    return {"name": name, "description": f"from {name}.hts ({n} frames, {trailer_ms} ms)", "frames": frames,
-            "end_in_reset": False, "hts_total_ms": trailer_ms}
+    desc = f"from {name}.hts ({n} frames, {trailer_ms} ms)" + (f"; {len(clamped)} angle(s) clamped" if clamped else "")
+    return {"name": name, "description": desc, "frames": frames, "end_in_reset": False, "hts_total_ms": trailer_ms,
+            "clamped": clamped}
 
 
 def load(path):
