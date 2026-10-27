@@ -1,0 +1,27 @@
+{
+  "name": "look_around",
+  "description": "Turn the head left, then right, then back to centre.",
+  "frames": [
+    {
+      "angles": {
+        "NeckLR": 50
+      },
+      "runtime": 900,
+      "hold": 400
+    },
+    {
+      "angles": {
+        "NeckLR": 130
+      },
+      "runtime": 1500,
+      "hold": 400
+    },
+    {
+      "angles": {
+        "NeckLR": 90
+      },
+      "runtime": 900
+    }
+  ],
+  "end_in_reset": true
+}

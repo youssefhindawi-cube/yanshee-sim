@@ -1,0 +1,6 @@
+mujoco>=3.1
+numpy
+# real robot only (imported by YanAPI.py)
+requests
+nest_asyncio
+opencv-python

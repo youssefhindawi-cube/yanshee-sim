@@ -1,0 +1,53 @@
+"""RViz view of the Yanshee URDF with a slider per servo.
+
+    ros2 launch yanshee_description display.launch.py            # sliders start in the reset pose
+    ros2 launch yanshee_description display.launch.py gui:=false # e.g. when another node publishes /joint_states
+
+Slider values are radians; servo degrees = rad * 57.2958 (the same numbers YanAPI uses).
+"""
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+RESET_POSE_RAD = {
+            "RightShoulderRoll": 1.5708,
+            "RightShoulderFlex": 2.4435,
+            "RightElbowFlex": 2.8623,
+            "LeftShoulderRoll": 1.5708,
+            "LeftShoulderFlex": 0.6981,
+            "LeftElbowFlex": 0.2618,
+            "RightHipLR": 1.5708,
+            "RightHipFB": 1.0472,
+            "RightKneeFlex": 1.3265,
+            "RightAnkleFB": 1.9199,
+            "RightAnkleUD": 1.5708,
+            "LeftHipLR": 1.5708,
+            "LeftHipFB": 2.0944,
+            "LeftKneeFlex": 1.8151,
+            "LeftAnkleFB": 1.2217,
+            "LeftAnkleUD": 1.5708,
+            "NeckLR": 1.5708,
+}
+
+
+def generate_launch_description():
+    share = get_package_share_directory("yanshee_description")
+    with open(os.path.join(share, "urdf", "yanshee.urdf")) as f:
+        urdf = f.read()
+    gui = LaunchConfiguration("gui")
+    rviz = LaunchConfiguration("rviz")
+    return LaunchDescription([
+        DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument("rviz", default_value="true"),
+        Node(package="robot_state_publisher", executable="robot_state_publisher",
+             parameters=[{"robot_description": urdf}]),
+        Node(package="joint_state_publisher_gui", executable="joint_state_publisher_gui",
+             parameters=[{"zeros": RESET_POSE_RAD}], condition=IfCondition(gui)),
+        Node(package="rviz2", executable="rviz2", arguments=["-d", os.path.join(share, "rviz", "yanshee.rviz")],
+             condition=IfCondition(rviz)),
+    ])

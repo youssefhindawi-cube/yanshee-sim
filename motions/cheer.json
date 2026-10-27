@@ -1,0 +1,60 @@
+{
+  "name": "cheer",
+  "description": "Both arms up, pump them three times.",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderFlex": 10,
+        "LeftShoulderFlex": 170,
+        "RightElbowFlex": 90,
+        "LeftElbowFlex": 90
+      },
+      "runtime": 900,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "RightShoulderFlex": 35,
+        "LeftShoulderFlex": 145
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightShoulderFlex": 10,
+        "LeftShoulderFlex": 170
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightShoulderFlex": 35,
+        "LeftShoulderFlex": 145
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightShoulderFlex": 10,
+        "LeftShoulderFlex": 170
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightShoulderFlex": 35,
+        "LeftShoulderFlex": 145
+      },
+      "runtime": 350
+    },
+    {
+      "angles": {
+        "RightShoulderFlex": 10,
+        "LeftShoulderFlex": 170
+      },
+      "runtime": 350,
+      "hold": 300
+    }
+  ],
+  "end_in_reset": true
+}

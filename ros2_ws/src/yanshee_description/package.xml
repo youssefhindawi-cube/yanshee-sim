@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>yanshee_description</name>
+  <version>0.1.0</version>
+  <description>URDF and meshes for the UBTECH Yanshee humanoid. Joint names are YanAPI servo names; joint position (rad) equals the servo angle (deg) in radians. Generated from the Webots Yanshee model by yanshee_sim/tools/build_models.py.</description>
+  <maintainer email="yousef.hendawe@cubeconsult.org">Youssef</maintainer>
+  <license>TODO</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

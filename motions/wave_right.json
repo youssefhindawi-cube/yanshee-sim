@@ -1,0 +1,65 @@
+{
+  "name": "wave_right",
+  "description": "Raise the right arm and wave hello four times, looking slightly to the right.",
+  "frames": [
+    {
+      "angles": {
+        "RightShoulderFlex": 30,
+        "RightElbowFlex": 90,
+        "NeckLR": 105
+      },
+      "runtime": 800,
+      "hold": 100
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 80
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 80
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 80
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 130
+      },
+      "runtime": 300
+    },
+    {
+      "angles": {
+        "RightElbowFlex": 90
+      },
+      "runtime": 300,
+      "hold": 200
+    }
+  ],
+  "end_in_reset": true
+}

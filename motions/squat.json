@@ -1,0 +1,54 @@
+{
+  "name": "squat",
+  "description": "Bend the knees twice (legs mirrored: right HipFB -d, Knee -2d, AnkleFB +d). Tests balance.",
+  "frames": [
+    {
+      "angles": {
+        "RightHipFB": 40,
+        "RightKneeFlex": 36,
+        "RightAnkleFB": 130,
+        "LeftHipFB": 140,
+        "LeftKneeFlex": 144,
+        "LeftAnkleFB": 50
+      },
+      "runtime": 1200,
+      "hold": 300
+    },
+    {
+      "angles": {
+        "RightHipFB": 60,
+        "RightKneeFlex": 76,
+        "RightAnkleFB": 110,
+        "LeftHipFB": 120,
+        "LeftKneeFlex": 104,
+        "LeftAnkleFB": 70
+      },
+      "runtime": 1200,
+      "hold": 300
+    },
+    {
+      "angles": {
+        "RightHipFB": 40,
+        "RightKneeFlex": 36,
+        "RightAnkleFB": 130,
+        "LeftHipFB": 140,
+        "LeftKneeFlex": 144,
+        "LeftAnkleFB": 50
+      },
+      "runtime": 1200,
+      "hold": 300
+    },
+    {
+      "angles": {
+        "RightHipFB": 60,
+        "RightKneeFlex": 76,
+        "RightAnkleFB": 110,
+        "LeftHipFB": 120,
+        "LeftKneeFlex": 104,
+        "LeftAnkleFB": 70
+      },
+      "runtime": 1200
+    }
+  ],
+  "end_in_reset": true
+}
