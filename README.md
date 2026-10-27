@@ -376,7 +376,7 @@ method list, the relay modes and the safety rules are in [docs/ARCHITECTURE.md](
 
 | Function | Description |
 |---|---|
-| `load(path)` / `save(motion, path)` | Read or write a motion JSON file. |
+| `load(path)` / `save(motion, path)` | Read or write a motion JSON file, or the robot's `.hts` format when the path ends in `.hts` (`yanshee_sim.hts`). |
 | `validate(motion, start_pose=None)` | Returns `(errors, warnings)`: limits, runtimes, speed. |
 | `self_collisions(motion, samples_per_frame=8)` | List of `(frame, fraction, (body, body))` contacts during the motion. |
 | `play(robot, motion, speed=1.0, on_frame=None)` | Run a motion on any robot, with an optional callback per frame. |
@@ -439,6 +439,15 @@ bot.close()
 
 Included: `wave_right`, `look_around`, `cheer`, `squat`. Recorded built-ins go in `motions/recorded/`.
 
+**The robot's own `.hts` files** (what the app and the robot's motion editor store) are supported everywhere a
+motion path is accepted: `motion.load()`, `play_motion.py`, the web GUI's motion folder. `python3 -m
+yanshee_sim.hts FILE.hts` prints the frames; `python3 -m yanshee_sim.hts motion.json out.hts` converts either
+way. The format (33-byte records, 20 ms ticks, 0xFF = servo not moved) is documented in `yanshee_sim/hts.py`
+and was checked against 46 app-made files. There is no REST download of motions; copy them from the robot with
+`scp pi@ROBOT:/home/pi/Documents/motions/NAME.hts .` (the firmware's folder for uploaded motions). App-made
+files can carry angles a degree past the documented limits (LeftHipFB 171): `validate()` reports them and
+the simulator clamps them in non-strict mode.
+
 ---
 
 ## 8. Servo reference
@@ -470,6 +479,10 @@ Included: `wave_right`, `look_around`, `cheer`, `squat`. Recorded built-ins go i
 ---
 
 ## 9. From simulation to the real robot: step by step
+
+For the first session with a robot, follow `docs/ROBOT_SESSION_PLAN.md`: it orders the measurements the sim still
+lacks (Pi dump, joint directions, IMU conventions, servo speed, gait timing) and `tools/robot_checks.py` runs each
+one as a single command.
 
 1. **Safety setup.** Flat floor or table, away from edges, battery > 30%, and someone at the emergency stop on top of the head. Stay within about 1 hour of continuous use (servo life).
 2. **Connect.** Robot and laptop on the same 2.4 GHz Wi-Fi. Check with `curl http://IP:9090/v1/devices/battery`.
@@ -515,7 +528,9 @@ Edit and rebuild when you want to change:
 |---|---|
 | Servo limits or reset pose | `yanshee_sim/servos.py` |
 | Servo strength, damping or armature | `SERVO_KP`, `SERVO_TORQUE`, `SERVO_DAMPING`, `SERVO_ARMATURE` in `tools/build_models.py` |
+| Foot soles (flat contact boxes under the feet) | `SOLE_INSET`, `SOLE_THICKNESS` in `tools/build_models.py` |
 | Floor, lights or cameras | `SCENE` in `tools/build_models.py` |
+| Sim gait (stride, sway, cycle time, IMU balance gains) | `SimGait` class attributes in `yanshee_sim/sim_extras.py`; find values with `python3 tools/tune_gait.py` |
 
 Then run `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit the generated files by hand.
 
@@ -525,10 +540,11 @@ Then run `python3 tools/build_models.py && python3 tests/test_models.py`. Don't 
 
 | Test | Checks |
 |---|---|
-| `tests/test_models.py` | Reset pose inside limits; URDF and MuJoCo forward kinematics agree (< 1 µm over random poses); reset keyframe; the robot stands for 3 s (< 5° tilt, < 6 mm sag) |
+| `tests/test_models.py` | Reset pose inside limits; URDF and MuJoCo forward kinematics agree (< 1 µm over random poses); reset keyframe; the robot stands for 3 s (< 5° tilt, < 6 mm sag) and stands still on its box soles (no joint chatter, 8 steady floor contacts) |
 | `tests/test_mirror.py` | Sim → robot sends changes with the speed cap, blocks self-collisions, starts aligned with the robot; robot → sim follows and clamps |
 | `tests/test_motion.py` | Motion validation (limits, runtimes, speed, the return to reset), playback and cancelling, the self-collision sweep, `play_motion.py` (headless and against the fake robot) |
 | `tests/test_rest.py` | `YansheeRest` against the fake robot: every endpoint, timeouts, refusals, bad replies, the same paths and payloads as the official `YanAPI.py` |
+| `tests/test_hts.py` | The robot's `.hts` motion format: record layout, checksums, 20 ms ticks and limits, round trips, `motion.load()`/`save()` dispatch and the CLI |
 | `tests/test_controller.py` | The relay controller in sim, robot and both modes: safety gate, STOP and mode-switch races, walking dead-man, robot that stops answering, concurrency and a soak (`YANSHEE_SOAK_S` shortens it) |
 | `tests/test_server.py` | The web server with FastAPI's `TestClient`: every endpoint, bad input, body limits, the WebSocket, MJPEG streams and the robot-camera proxy, a real uvicorn shutdown |
 | `tests/test_yanapi_sim.py` | `run_in_sim.py`'s simulated YanAPI (official example scripts run unchanged, stop/sync playback, failure values), `record_real_motion.py`, `pose_editor.py`, `view.py` |
@@ -554,10 +570,15 @@ Approximate, and worth tuning against the real robot:
   - Walking, kicks and fast balance-critical moves need tuning first.
   - A laptop cannot do closed-loop balance over the REST API anyway (tens of ms per call).
 - **Inertia data:** one link's Webots inertia values were physically invalid. MuJoCo's `balanceinertia` repairs them.
-- **IMU:** the simulated IMU uses the model frame. The real robot's raw IMU frame is left-back-up.
+- **Feet:** each foot meets the floor through a flat box sole, level in the reset pose. The mesh sole has pads and recesses and sits about 1.2° toe-down in the reset pose, so a mesh-on-floor contact made the standing robot rock between 2 and 6 contact points (1–1.5° of hip/ankle chatter and 8 m/s² of IMU noise). The pads' real layout is not modelled; the mesh still counts for self-collision.
+- **Sim gait:** `SimGait` is a stepping pattern with ankle balance on the torso lean (rate damping and a pitch gain), tuned in simulation by `tools/tune_gait.py`: 19.4 cm/s at `speed_v 5` with the servo targets limited to 300 deg/s, and it stays up backward, sideways, diagonally and at every `period` (`tools/gait_tuning.json`). It is not UBTECH's gait (closed source; the only published figure is a vendor's "10 cm/s"), so match its `CYCLE`/`STRIDE` to the robot once `tools/robot_checks.py gait` has measured it.
+- **IMU:** `get_sensors_gyro()` emulates what the documents say the robot reports: accel in g on right/front/down axes, gyro in deg/s and compass on left/back/up axes, euler in degrees with euler-x ≈ 0 face down, ≈ ±180 on the back (the course's fall thresholds) and ≈ 90 upright, ~19 Hz sample-and-hold, noise and gyro bias from a published Allan-variance fit. The sign of the upright value, the sign of euler-y and the compass units are assumptions (`IMU_*` in `yanshee_sim/robot.py`); `SimRobot.torso_lean()` gives the exact model-frame lean instead.
 - **Not simulated:** vision (except colour detection from the rendered head camera in the web GUI), voice, and the built-in dances. The web GUI's sim LEDs, sim built-ins (`motions/builtin/`) and sim gait are approximations. Built-in motions can be recorded with `record_real_motion.py`.
 - **Not yet confirmed on hardware:**
-  - the right-arm reset values (mirrored from the left)
+  - the reset pose (it is the `init` pose of UBTECH's BehaviorEditor description, not read from a robot)
+  - the IMU conventions above (euler-x ≈ 90 upright and rising when leaning back comes from UBTECH's self-balancing course sample; the euler-y sign and the raw gyro/accel axes do not): read `get_sensors_gyro()` upright, leaning 20° back, 20° to the right and lying face down, and fix the signs in `robot.py` if they differ
+  - the ankle-pitch direction: that same UBTECH sample corrects a backward lean with `RightAnkleFB −`, `LeftAnkleFB +`, which in the sim leans the torso further back (the sim needs the opposite). UBTECH's 2018 walk keyframes agree with the sim's direction, so the sample may simply be odd, but the from-robot mirroring test in section 5 is the way to settle it
+  - the servo model: UBTECH's own 2018 "walk" keyframes walk in the sim at 400 ms per frame but not at 240 ms, and walk backward falls, whatever the gain; a readback trace of a step command on the real servos is needed to fit `SERVO_KP`/`SERVO_TORQUE`
   - the joint directions in [section 8](#8-servo-reference)
   - Step 3 of section 9 checks both.
 
@@ -588,7 +609,7 @@ Approximate, and worth tuning against the real robot:
 
 | Path | Contents |
 |---|---|
-| `yanshee_sim/` | Python package: `robot.py` (sim and real backends), `rest.py` (REST client for the robot), `controller.py` (relay controller and safety gate), `sim_extras.py` (renderer, LEDs, sim built-ins and gait, sim battery), `motion.py`, `mirror.py`, `servos.py`, `yanapi_sim.py` (fake YanAPI) |
+| `yanshee_sim/` | Python package: `robot.py` (sim and real backends), `rest.py` (REST client for the robot), `controller.py` (relay controller and safety gate), `sim_extras.py` (renderer, LEDs, sim built-ins and gait, sim battery), `motion.py`, `hts.py` (the robot's .hts motion format), `mirror.py`, `servos.py`, `yanapi_sim.py` (fake YanAPI) |
 | `yanshee_sim/web/` | Web GUI: `server.py` (FastAPI) and `static/` (the page: `index.html`, `app.js`, `style.css`) |
 | `scripts/` | `web_gui.py`, `view.py`, `play_motion.py`, `pose_editor.py`, `mirror.py`, `run_in_sim.py`, `record_real_motion.py` |
 | `model/` | Generated MuJoCo model (`scene.xml` is the entry point) |
@@ -596,6 +617,8 @@ Approximate, and worth tuning against the real robot:
 | `motions/` | Motion files; `recorded/` holds motions copied from the robot, `builtin/` the approximate sim versions of the robot's parametric built-ins |
 | `requirements.txt` | Python dependencies |
 | `tools/build_models.py` | Webots JSON → MJCF + URDF + STL converter |
+| `tools/tune_gait.py` | Parallel headless sweep of the sim gait's constants; writes `tools/gait_tuning.json` |
+| `tools/robot_checks.py` | Measurements on the real robot the sim still lacks (REST latency, IMU conventions, servo step response, gait timing, read-only ssh dump of the Pi); see `docs/ROBOT_SESSION_PLAN.md` |
 | `source_model/robot.json` | Webots Yanshee model (Git LFS) from [Yanshee-Serenade/Yanshee-RL-Unity](https://github.com/Yanshee-Serenade/Yanshee-RL-Unity). That repository has no license file, so ask its authors before redistributing. |
 | `tests/` | Tests (see [section 12](#12-tests)), `fake_robot.py` (fake Yanshee REST server) and `data/` (the motion list captured from a real robot) |
 | `knowledge/` | Yanshee knowledge base, course digest and online resources |

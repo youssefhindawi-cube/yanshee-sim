@@ -1277,17 +1277,19 @@ class Controller:
 
     # -- motion files --------------------------------------------------------------------------------
     def _motion_path(self, name):
-        """Existing file for a motion name (user folder, then recorded/), or None."""
+        """Existing file for a motion name (user folder, then recorded/; NAME.json, else the robot's NAME.hts), or None."""
         if not isinstance(name, str) or not NAME_RE.match(name):
             return None
         for d in (self.motions_dir, os.path.join(self.motions_dir, "recorded")):
-            p = os.path.join(d, name + ".json")
-            if os.path.isfile(p):
-                return p
+            for ext in (".json", ".hts"):
+                p = os.path.join(d, name + ext)
+                if os.path.isfile(p):
+                    return p
         return None
 
     def motion_files(self):
-        """[{name, dir: "user"|"recorded", description, frames, duration_s}] (or {name, dir, error})."""
+        """[{name, dir: "user"|"recorded", format: "json"|"hts", description, frames, duration_s}] (or {name, dir,
+        error}). NAME.json and the robot's NAME.hts are both listed; a .hts next to a .json of the same name is skipped."""
         out = []
         for d, kind in ((self.motions_dir, "user"), (os.path.join(self.motions_dir, "recorded"), "recorded")):
             try:
@@ -1295,12 +1297,12 @@ class Controller:
             except OSError:
                 continue
             for fn in files:
-                stem = fn[:-5]
-                if not fn.endswith(".json") or not NAME_RE.match(stem):
+                stem, ext = os.path.splitext(fn)
+                if ext not in (".json", ".hts") or not NAME_RE.match(stem) or (ext == ".hts" and stem + ".json" in files):
                     continue
                 try:
                     mo = motion_mod.load(os.path.join(d, fn))
-                    out.append({"name": stem, "dir": kind, "description": mo.get("description", ""),
+                    out.append({"name": stem, "dir": kind, "format": ext[1:], "description": mo.get("description", ""),
                                 "frames": len(motion_mod._frames(mo)), "duration_s": round(motion_mod.duration_s(mo), 2)})
                 except (OSError, ValueError, AttributeError) as e:
                     out.append({"name": stem, "dir": kind, "error": f"unreadable: {e}"})

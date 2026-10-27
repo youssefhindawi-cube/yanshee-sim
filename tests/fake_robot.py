@@ -549,9 +549,10 @@ def h_sensors_list(s, now, q, b):
 
 def h_gyro(s, now, q, b):
     n = lambda: random.uniform(-0.01, 0.01)  # noqa: E731
+    # upright: accel about -1 g on the down axis, euler-x about 90 (0 would be face down, 180 on the back)
     return ok({"gyro": [{"id": 1, "gyro-x": n(), "gyro-y": n(), "gyro-z": n(), "accel-x": n(), "accel-y": n(),
-                         "accel-z": 9.8 + n(), "compass-x": 0.2, "compass-y": -0.1, "compass-z": 0.4,
-                         "euler-x": -179.5 + n(), "euler-y": 0.3 + n(), "euler-z": 12.0 + n()}]})
+                         "accel-z": -1.0 + n(), "compass-x": 0.2, "compass-y": -0.1, "compass-z": 0.4,
+                         "euler-x": 89.5 + n(), "euler-y": 0.3 + n(), "euler-z": 12.0 + n()}]})
 
 
 def _addon(kind, value):

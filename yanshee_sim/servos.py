@@ -8,7 +8,9 @@ import math
 import numbers
 
 # (servo id, YanAPI name, min deg, max deg)
-# Limits come from the YanAPI.set_servos_angles docstring ("runnable angle range").
+# Limits come from the YanAPI.set_servos_angles docstring ("runnable angle range"); UBTECH's BehaviorEditor
+# description uses the same numbers. Other UBTECH sources disagree on the neck: the REST schema says
+# NeckLR 45-135 and the course sketch 30-150. App-made .hts files contain LeftHipFB 171.
 SERVOS = [
     (1, "RightShoulderRoll", 0, 180),
     (2, "RightShoulderFlex", 0, 180),
@@ -33,19 +35,41 @@ NAMES = [s[1] for s in SERVOS]
 IDS = {s[1]: s[0] for s in SERVOS}
 LIMITS = {s[1]: (s[2], s[3]) for s in SERVOS}
 
-# Standing reset pose, in servo degrees. It matches the Webots model's saved joint positions:
-# legs, neck and left arm match the Yanshee Course default pose exactly; the right arm
-# mirrors the left (180 - x). Verify against get_servos_angles() on your robot after running
-# the built-in "reset" motion, and update if it differs. This is the single source: run
-# tools/build_models.py afterwards to regenerate the MuJoCo "reset" keyframe and the RViz
-# slider start values (ros2_ws/.../launch/display.launch.py).
+# Standing reset pose, in servo degrees: the "init" pose of UBTECH's BehaviorEditor robot
+# description (yanshee1_1.xml) and the first/last frame of app-made .hts motion files. The
+# Webots model's saved joint positions and the Yanshee Course default pose agree with it.
+# Verify against get_servos_angles() on your robot after the built-in "reset" motion, and
+# update if it differs. This is the single source: run tools/build_models.py afterwards to
+# regenerate the MuJoCo "reset" keyframe and the RViz slider start values
+# (ros2_ws/.../launch/display.launch.py).
 RESET_POSE = {
-    "RightShoulderRoll": 90, "RightShoulderFlex": 140, "RightElbowFlex": 164,
+    "RightShoulderRoll": 90, "RightShoulderFlex": 140, "RightElbowFlex": 165,
     "LeftShoulderRoll": 90, "LeftShoulderFlex": 40, "LeftElbowFlex": 15,
     "RightHipLR": 90, "RightHipFB": 60, "RightKneeFlex": 76, "RightAnkleFB": 110, "RightAnkleUD": 90,
     "LeftHipLR": 90, "LeftHipFB": 120, "LeftKneeFlex": 104, "LeftAnkleFB": 70, "LeftAnkleUD": 90,
     "NeckLR": 90,
 }
+
+# Left/right mirror rule from the same UBTECH robot description: a pose mirrored to the other
+# side uses 180 - x for every pair except the ankle roll servos (AnkleUD), which keep their value.
+MIRROR = {"RightShoulderRoll": "LeftShoulderRoll", "RightShoulderFlex": "LeftShoulderFlex",
+          "RightElbowFlex": "LeftElbowFlex", "RightHipLR": "LeftHipLR", "RightHipFB": "LeftHipFB",
+          "RightKneeFlex": "LeftKneeFlex", "RightAnkleFB": "LeftAnkleFB", "RightAnkleUD": "LeftAnkleUD"}
+MIRROR.update({left: right for right, left in list(MIRROR.items())})
+
+
+def mirror_pose(angles):
+    """The {name: deg} pose mirrored left<->right (NeckLR is mirrored about 90)."""
+    out = {}
+    for n, d in angles.items():
+        if n == "NeckLR":
+            out[n] = 180 - d
+        elif n in MIRROR:
+            out[MIRROR[n]] = d if n.endswith("AnkleUD") else 180 - d
+        else:
+            out[n] = d
+    return out
+
 
 # YanAPI.set_servos_angles accepts runtime between these values (milliseconds).
 MIN_RUNTIME_MS = 200

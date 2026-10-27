@@ -159,7 +159,8 @@
                 <inertial pos="0.0215583 -0.000420083 -0.0208296" mass="0.093" fullinertia="9.837e-05 0.000202858 0.000142534 -5.93368e-08 -1.92918e-06 -1.19961e-06"/>
                 <geom class="visual" mesh="RightAnkleUD_0" material="c1"/>
                 <geom class="visual" mesh="RightAnkleUD_1" material="c2"/>
-                <geom class="collision" name="RightAnkleUD_col" mesh="RightAnkleUD_collision"/>
+                <geom class="collision" name="RightAnkleUD_col" mesh="RightAnkleUD_collision" contype="2"/>
+                <geom class="collision" name="RightAnkleUD_sole" type="box" pos="0.0235233 -0.000612666 -0.0318799" size="0.0380032 0.052991 0.002"/>
               </body>
             </body>
           </body>
@@ -195,7 +196,8 @@
                 <inertial pos="-0.0215562 -0.000459851 -0.0208287" mass="0.093" fullinertia="9.837e-05 0.00020285 0.000142542 8.17083e-08 1.92875e-06 -1.38057e-06"/>
                 <geom class="visual" mesh="LeftAnkleUD_0" material="c1"/>
                 <geom class="visual" mesh="LeftAnkleUD_1" material="c2"/>
-                <geom class="collision" name="LeftAnkleUD_col" mesh="LeftAnkleUD_collision"/>
+                <geom class="collision" name="LeftAnkleUD_col" mesh="LeftAnkleUD_collision" contype="2"/>
+                <geom class="collision" name="LeftAnkleUD_sole" type="box" pos="-0.0235222 -0.000677484 -0.0320426" size="0.0380307 0.0530037 0.002"/>
               </body>
             </body>
           </body>
@@ -239,6 +241,6 @@
     <rangefinder name="distance_right" site="distance_right" cutoff="1.5"/>
   </sensor>
   <keyframe>
-    <key name="reset" qpos="0 0 -0.00733 1 0 0 0 1.5708 2.44346 2.86234 1.5708 0.698132 0.261799 1.5708 1.0472 1.32645 1.91986 1.5708 1.5708 2.0944 1.81514 1.22173 1.5708 1.5708" ctrl="1.5708 2.44346 2.86234 1.5708 0.698132 0.261799 1.5708 1.0472 1.32645 1.91986 1.5708 1.5708 2.0944 1.81514 1.22173 1.5708 1.5708"/>
+    <key name="reset" qpos="0 0 -0.00733 1 0 0 0 1.5708 2.44346 2.87979 1.5708 0.698132 0.261799 1.5708 1.0472 1.32645 1.91986 1.5708 1.5708 2.0944 1.81514 1.22173 1.5708 1.5708" ctrl="1.5708 2.44346 2.87979 1.5708 0.698132 0.261799 1.5708 1.0472 1.32645 1.91986 1.5708 1.5708 2.0944 1.81514 1.22173 1.5708 1.5708"/>
   </keyframe>
 </mujoco>

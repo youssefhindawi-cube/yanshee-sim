@@ -135,6 +135,28 @@ def test_stands_in_reset_pose():
     assert z_spawn - d.qpos[2] < 0.006, f"torso sagged {(z_spawn - d.qpos[2]) * 1000:.1f} mm"
 
 
+def test_feet_stand_still():
+    """The feet meet the floor through flat box soles: a standing robot must not rock (the mesh soles made the
+    hips and ankles chatter by 1-1.5 deg and the IMU accel jump by 8 m/s^2)."""
+    m = mujoco.MjModel.from_xml_path(SCENE)
+    d = mujoco.MjData(m)
+    floor = {g for g in range(m.ngeom) if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE}
+    mujoco.mj_resetDataKeyframe(m, d, m.key("reset").id)
+    for _ in range(int(2.0 / m.opt.timestep)):
+        mujoco.mj_step(m, d)
+    legs = [m.jnt_qposadr[m.joint(n).id] for n in NAMES if "Hip" in n or "Knee" in n or "Ankle" in n]
+    lo, hi, counts, touching = d.qpos[legs].copy(), d.qpos[legs].copy(), set(), set()
+    for _ in range(int(1.0 / m.opt.timestep)):
+        mujoco.mj_step(m, d)
+        lo, hi = np.minimum(lo, d.qpos[legs]), np.maximum(hi, d.qpos[legs])
+        floor_contacts = [c for c in d.contact[:d.ncon] if c.geom1 in floor or c.geom2 in floor]
+        counts.add(len(floor_contacts))
+        touching |= {m.geom(c.geom2 if c.geom1 in floor else c.geom1).name for c in floor_contacts}
+    assert math.degrees((hi - lo).max()) < 0.05, f"leg joints moved {math.degrees((hi - lo).max()):.2f} deg while standing"
+    assert touching == {"RightAnkleUD_sole", "LeftAnkleUD_sole"}, touching
+    assert counts == {8}, f"floor contact count varied: {sorted(counts)}"
+
+
 # -- SimRobot ---------------------------------------------------------------------------
 def _raises(fn, exc=ServoCommandError):
     try:
@@ -212,9 +234,51 @@ def test_sim_imu_fields():
         bot.wait(0.5)
         g = bot.get_sensors_gyro()["data"]["gyro"][0]
         assert set(g) == keys and all(type(v) in (int, float) for v in g.values())
-        assert 9.0 < math.hypot(g["accel-x"], g["accel-y"], g["accel-z"]) < 10.6, (fixed, g)
-        assert abs(g["euler-x"]) < 5 and abs(g["euler-y"]) < 5
+        assert 0.95 < math.hypot(g["accel-x"], g["accel-y"], g["accel-z"]) < 1.05, (fixed, g)  # g units
+        assert g["accel-z"] < -0.9, g  # the down axis reads about -1 g upright
+        assert abs(g["euler-x"] - 90) < 5 and abs(g["euler-y"]) < 5 and abs(g["euler-z"]) < 5, g
+        assert abs(g["gyro-x"] + 1.14) < 2 and abs(g["gyro-y"]) < 2 and abs(g["gyro-z"]) < 2, g  # bias + noise
+        assert bot.get_sensors_gyro()["data"]["gyro"][0] == g  # held for 1/19 s of sim time
+        bot.wait(0.1)
+        assert bot.get_sensors_gyro()["data"]["gyro"][0] != g
+        bot.imu_noise = False
+        bot.wait(0.1)
+        h = bot.get_sensors_gyro()["data"]["gyro"][0]
+        tol = 1e-6 if fixed else 1.0  # a free-standing robot still sways a little while settling
+        assert abs(h["gyro-x"]) < tol and abs(h["gyro-y"]) < tol and abs(h["gyro-z"]) < tol, h
         bot.close()
+    bot = SimRobot(viewer=False, realtime=False)
+    lean = bot.torso_lean()
+    bot.close()
+    assert len(lean) == 4 and abs(lean[0]) < 5 and abs(lean[1]) < 5
+
+
+def test_sim_imu_fall_convention():
+    """euler-x is about 0 face down and about +-180 on the back (the course's fall thresholds), 90 upright;
+    euler-y is the sideways lean and euler-z the heading (+ = turned left)."""
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.imu_noise = False
+
+    def read(quat_wxyz):
+        with bot._lock:
+            bot.data.qpos[2] = 0.4  # in the air, so the orientation holds while falling
+            bot.data.qpos[3:7] = quat_wxyz
+            bot.data.qvel[:] = 0
+        bot.wait(0.06)
+        g = bot.get_sensors_gyro()["data"]["gyro"][0]
+        return g["euler-x"], g["euler-y"], g["euler-z"]
+    s2 = math.sqrt(0.5)
+    ex, ey, ez = read((s2, -s2, 0, 0))  # pitched 90 deg forward about x: face down
+    assert abs(ex) < 3 and abs(ey) < 3, (ex, ey)
+    ex, ey, ez = read((s2, s2, 0, 0))  # on the back
+    assert abs(ex) > 177 and abs(ey) < 3, (ex, ey)
+    ex, ey, ez = read((math.cos(math.radians(10)), math.sin(math.radians(10)), 0, 0))  # leaning 20 deg back
+    assert 107 < ex < 113, ex  # UBTECH's self-balancing sample: upright 91.95, leaning back raises euler-x
+    ex, ey, ez = read((math.cos(math.radians(10)), 0, math.sin(math.radians(10)), 0))  # 20 deg lean about y
+    assert abs(ex - 90) < 3 and 15 < ey < 25, (ex, ey)
+    ex, ey, ez = read((math.cos(math.radians(15)), 0, 0, math.sin(math.radians(15))))  # turned 30 deg left
+    assert abs(ex - 90) < 3 and 27 < ez < 33, (ex, ez)
+    bot.close()
 
 
 if __name__ == "__main__":

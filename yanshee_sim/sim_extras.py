@@ -287,34 +287,64 @@ def load_builtin(name, direction=""):
 
 # -- sim gait ---------------------------------------------------------------------
 class SimGait:
-    """Open-loop stepping for the free-standing sim, driven like control_motion_gait.
+    """Stepping gait for the free-standing sim, driven like control_motion_gait.
 
     One cycle is two steps: the torso sways over one foot (hip roll + ankle roll), the other leg lifts
     (hip/knee/ankle pitch, foot kept flat), swings and is put down. speed_v (-5..5, + forward) sets the
     stride, speed_h (-5..5, + to the robot's left) a side step, period (1..5) the step time, steps the
-    number of steps (0 = until stopped), wave the arm swing. No balance feedback: it is tuned to stay
-    upright in the sim; a tilt watchdog stops it and stands up if the torso tilts more than max_tilt_deg.
+    number of steps (0 = until stopped), wave the arm swing. Balance is an ankle strategy on the torso lean
+    (SimRobot.torso_lean, the exact model-frame angles): the ankles lean the torso back towards the lean it
+    had in the starting crouch, in proportion to the angles (K_PITCH, K_ROLL) and rates (D_PITCH, D_ROLL).
+    A tilt watchdog stops the walk and stands up if the torso tilts more than max_tilt_deg. Targets are slew-limited to MAX_DEG_S. This is
+    not the robot's own gait (UBTECH's is closed source); it only makes the sim walk plausibly.
+
+    The class attributes are the tuning picked by tools/tune_gait.py (fastest walk that stays up forward,
+    backward, sideways and at every period); pass any of them in lower case to try others, e.g.
+    SimGait(sim, sway=10, cycle=1.0).
     """
 
+    # tools/tune_gait.py winner (tools/gait_tuning.json): 19.4 cm/s at speed_v 5 in the sim with the servo slew
+    # held to 300 deg/s, every scenario under 12.5 deg of tilt. Rate damping (D_ROLL) is what keeps it up;
+    # a roll gain (K_ROLL) fights the sway. UBTECH's own gait course uses a 0.8 s sway period.
     CROUCH = 10.0  # deg: knees bent while walking
-    SWAY = 8.0  # deg of hip/ankle roll to move the weight over the stance foot
-    LIFT = 12.0  # deg of hip pitch used to lift the swing foot (knee twice that)
+    SWAY = 7.0  # deg of hip/ankle roll that moves the weight over the stance foot
+    LIFT = 18.0  # deg of hip pitch used to lift the swing foot (knee twice that)
+    STRIDE = 6.5  # deg of hip pitch per unit of speed_v
+    SIDE = 1.0  # deg of hip/ankle roll per unit of speed_h
+    BACK = 0.5  # backward strides are this fraction of forward ones (less stable)
+    DIAG = 0.5  # side amplitude is scaled by this while also walking forward or backward
+    CYCLE = 0.7  # s per two steps at period 0; a cycle lasts CYCLE + CYCLE_PER_PERIOD * period
+    CYCLE_PER_PERIOD = 0.05
+    K_PITCH = 0.3  # ankle pitch deg per deg of torso lean about x (+ = leaning back)
+    K_ROLL = 0.0  # ankle roll deg per deg of torso lean about y (+ = leaning right)
+    D_PITCH = 0.03  # ankle pitch deg per deg/s of lean rate about x
+    D_ROLL = 0.06  # ankle roll deg per deg/s of lean rate about y
+    MAX_DEG_S = 300.0  # servo slew limit on the targets (the servo family is rated about 0.2 s per 60 deg)
     DT = 0.02
+    TUNABLE = ("crouch", "sway", "lift", "stride", "side", "back", "diag", "cycle", "cycle_per_period",
+               "k_pitch", "k_roll", "d_pitch", "d_roll", "max_deg_s")
 
-    def __init__(self, sim, max_tilt_deg=25.0):
+    def __init__(self, sim, max_tilt_deg=25.0, **tuning):
         self.sim, self.max_tilt = sim, max_tilt_deg
+        for k, v in tuning.items():
+            if k not in self.TUNABLE:
+                raise TypeError(f"SimGait: unknown tuning parameter '{k}' (one of {self.TUNABLE})")
+            setattr(self, k.upper(), float(v))
         self.steps_done = 0
         self.status = "idle"
 
-    @staticmethod
-    def cycle_time(period):
-        return 1.5 + 0.1 * min(max(period, 1), 5)
-
     @classmethod
-    def pose(cls, phi, stride=0.0, side=0.0, amp=1.0, wave=False, crouch=None):
+    def cycle_time(cls, period):
+        """Seconds per cycle (two steps) at gait period 1..5, with the class defaults."""
+        return cls.CYCLE + cls.CYCLE_PER_PERIOD * min(max(period, 1), 5)
+
+    def _cycle(self, period):
+        return self.CYCLE + self.CYCLE_PER_PERIOD * min(max(period, 1), 5)
+
+    def pose(self, phi, stride=0.0, side=0.0, amp=1.0, wave=False, crouch=None):
         """Leg (and arm) servo angles at cycle phase phi (0..1): left leg swings in [0, 0.5), right in [0.5, 1)."""
-        crouch = cls.CROUCH if crouch is None else crouch
-        r = cls.SWAY * amp * math.sin(2 * math.pi * phi)  # > 0: weight on the right foot
+        crouch = self.CROUCH if crouch is None else crouch
+        r = self.SWAY * amp * math.sin(2 * math.pi * phi)  # > 0: weight on the right foot
 
         def shaped(u):
             return min(max((u - 0.15) / 0.7, 0.0), 1.0)
@@ -324,7 +354,7 @@ class SimGait:
             u = (phi - offset) % 1.0
             if u < 0.5:  # swing: lift and move from back to front
                 v = shaped(u / 0.5)
-                lift, s = cls.LIFT * amp * math.sin(math.pi * v), 0.5 - 0.5 * math.cos(math.pi * v)
+                lift, s = self.LIFT * amp * math.sin(math.pi * v), 0.5 - 0.5 * math.cos(math.pi * v)
             else:  # stance: the foot slides back under the body
                 lift, s = 0.0, 1.0 - (u - 0.5) / 0.5
             fwd, lat = stride * amp * (2 * s - 1), side * amp * (2 * s - 1)
@@ -339,7 +369,7 @@ class SimGait:
         if wave:
             swing = 15.0 * amp * math.sin(2 * math.pi * phi)
             out.update(RightShoulderRoll=90 - swing, LeftShoulderRoll=90 - swing)
-        return {n: min(max(d, LIMITS[n][0]), LIMITS[n][1]) for n, d in out.items()}
+        return out
 
     @staticmethod
     def describe(speed_v, speed_h):
@@ -350,6 +380,32 @@ class SimGait:
             parts.append("left" if speed_h > 0 else "right")
         return "walking " + " and ".join(parts) if parts else "stepping in place"
 
+    def _lean(self):
+        """(lean about x, lean about y, rates) of the torso in deg and deg/s, model frame (SimRobot.torso_lean)."""
+        return self.sim.torso_lean()
+
+    def _balance(self, target, ref, amp):
+        """Ankle strategy: lean the torso back towards ref = (lean x, lean y) measured in the starting crouch.
+        Measured in the sim: +d on RightAnkleFB with -d on LeftAnkleFB pitches the torso forward (lean about x
+        down); +r on both AnkleUD leans it to the left (lean about y down)."""
+        if not (self.K_PITCH or self.K_ROLL or self.D_PITCH or self.D_ROLL):
+            return
+        ex, ey, wx, wy = self._lean()
+        pitch = amp * (self.K_PITCH * (ex - ref[0]) + self.D_PITCH * wx)
+        roll = amp * (self.K_ROLL * (ey - ref[1]) + self.D_ROLL * wy)
+        target["RightAnkleFB"] += pitch
+        target["LeftAnkleFB"] -= pitch
+        target["RightAnkleUD"] += roll
+        target["LeftAnkleUD"] += roll
+
+    def _slew(self, target, last, dt):
+        lim = self.MAX_DEG_S * dt
+        out = {}
+        for n, deg in target.items():
+            deg = min(max(deg, LIMITS[n][0]), LIMITS[n][1])
+            out[n] = deg if last is None or n not in last else last[n] + min(max(deg - last[n], -lim), lim)
+        return out
+
     def _send(self, angles, ms):
         self.sim._send(angles, ms)  # exact piecewise-linear targets (set_servos_angles clamps to >= 200 ms)
 
@@ -358,8 +414,10 @@ class SimGait:
         (speed_v, speed_h, period, wave). Returns a status text."""
         sim, dt = self.sim, self.DT
         self.steps_done, self.status = 0, "walking"
-        sim.set_servos_angles(self.pose(0.0, amp=0.0), 600)
+        sim.set_servos_angles(self._slew(self.pose(0.0, amp=0.0), None, dt), 600)
         sim.wait(0.7)
+        ref = self._lean()[:2]
+        last = None
         phi, amp, t_prev = 0.0, 0.0, sim.data.time
         stopping, status = False, "done"
         while True:
@@ -372,9 +430,11 @@ class SimGait:
             if sim.torso_tilt_deg() > self.max_tilt:
                 status = f"stopped: torso tilted over {self.max_tilt:g} deg"
                 break
-            T = self.cycle_time(p.get("period", 1))
-            stride = 2.0 * min(max(p.get("speed_v", 0), -4), 5)  # backward strides are shorter (less stable)
-            side = 1.0 * min(max(p.get("speed_h", 0), -5), 5)
+            T = self._cycle(p.get("period", 1))
+            v = min(max(p.get("speed_v", 0), -5), 5)
+            h = min(max(p.get("speed_h", 0), -5), 5)
+            stride = self.STRIDE * (v if v >= 0 else v * self.BACK)
+            side = self.SIDE * h * (self.DIAG if v else 1.0)
             t = sim.data.time
             dphi = max(0.0, t - t_prev) / T
             t_prev = t
@@ -386,7 +446,10 @@ class SimGait:
                 self.steps_done += 1
                 if on_step:
                     on_step(self.steps_done)
-            self._send(self.pose(phi + dt / T, stride, side, amp, bool(p.get("wave"))), dt * 1000)
+            target = self.pose(phi + dt / T, stride, side, amp, bool(p.get("wave")))
+            self._balance(target, ref, amp)
+            last = self._slew(target, last, dt)
+            self._send(last, dt * 1000)
             sim.wait(dt)
         sim.set_servos_angles({n: RESET_POSE[n] for n in self.pose(0.0, wave=True)}, 600)
         sim.wait(0.6)

@@ -19,7 +19,6 @@ Differences from the real robot, on purpose:
 """
 import atexit
 import inspect
-import math
 import os
 import sys
 import threading
@@ -307,22 +306,9 @@ def stop_play_music():
 
 
 def get_sensors_gyro():
-    """Simulated IMU with the real field set. Euler angles are degrees in the model frame (x roll,
-    y pitch, z yaw); the real robot's IMU frame differs (see README). Compass is not simulated (0)."""
-    bot = _bot()
-    res = bot.get_sensors_gyro()
-    entry = dict(res["data"]["gyro"][0])
-    with bot._lock:
-        w, x, y, z = (float(v) for v in bot.data.sensor("imu_quat").data)
-    euler = {"euler-x": math.degrees(math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))),
-             "euler-y": math.degrees(math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))),
-             "euler-z": math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))}
-    out = {"id": 1}
-    for k in ("gyro-x", "gyro-y", "gyro-z", "accel-x", "accel-y", "accel-z"):
-        out[k] = float(entry.get(k, 0.0))
-    out.update({"compass-x": 0.0, "compass-y": 0.0, "compass-z": 0.0})
-    out.update({k: float(entry.get(k, v)) for k, v in euler.items()})
-    return {"code": 0, "data": {"gyro": [out]}, "msg": "success"}
+    """Simulated IMU with the real field set, in the robot's reporting frame and units as far as they are
+    documented (SimRobot.get_sensors_gyro: accel in g, gyro in deg/s, euler in deg, about 19 Hz)."""
+    return _bot().get_sensors_gyro()
 
 
 # YanAPI enums (copied from YanAPI.py; they have no dependencies) --------------

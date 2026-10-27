@@ -28,6 +28,10 @@ WAIT_SLICE_S = 0.05  # play() checks stop_event this often while waiting
 
 
 def load(path):
+    """A motion dict from a JSON file, or from one of the robot's own .hts files (see hts.py)."""
+    if str(path).lower().endswith(".hts"):
+        from . import hts
+        return hts.load(path)
     with open(path) as f:
         motion = json.load(f)
     if isinstance(motion, dict):
@@ -37,6 +41,10 @@ def load(path):
 
 
 def save(motion, path):
+    """Write a motion dict as JSON, or as an .hts file when the path ends in .hts."""
+    if str(path).lower().endswith(".hts"):
+        from . import hts
+        return hts.save(motion, path)
     with open(path, "w") as f:
         json.dump(motion, f, indent=2)
         f.write("\n")

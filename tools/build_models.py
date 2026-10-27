@@ -34,6 +34,13 @@ SRC = os.path.join(ROOT, "source_model", "robot.json")
 MODEL_DIR = os.path.join(ROOT, "model")
 ROS_PKG = os.path.join(ROOT, "ros2_ws", "src", "yanshee_description")
 FOOT_CLEARANCE = 0.0005  # m between the lowest vertex of the reset pose and the floor at spawn
+# The feet touch the floor through a flat box sole, not their mesh: the mesh sole has pads and recesses and
+# sits about 1.2 deg toe-down in the reset pose, so the standing robot rocked between 2 and 6 contact points
+# (1-1.5 deg hip/ankle chatter, IMU accel noise of 8 m/s^2). The box is level in the reset pose, its bottom
+# at the lowest pad, and gives four steady corner contacts. The mesh keeps colliding with the robot itself.
+SOLE_BODIES = ("RightAnkleUD", "LeftAnkleUD")
+SOLE_INSET = 0.002      # m inside the sole outline (rounded corners)
+SOLE_THICKNESS = 0.004  # m
 
 # Webots solid names -> YanAPI servo names (the Webots file has one typo).
 SOLID_FIX = {"LeftAndleFB": "LeftAnkleFB"}
@@ -213,6 +220,23 @@ def fmt(v):
     return " ".join(f"{x:.6g}" for x in v)
 
 
+def sole_box(b):
+    """(pos, half-size) in the body frame of a flat sole under body b: the outline of its downward-facing
+    mesh faces within 8 mm of the lowest vertex, SOLE_INSET smaller, SOLE_THICKNESS thick, bottom at that vertex."""
+    P, zmin = [], min(V[:, 2].min() for parts in b.meshes.values() for V, _ in parts)
+    for parts in b.meshes.values():
+        for V, F in parts:
+            n = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+            down = F[n[:, 2] < -0.9 * np.linalg.norm(n, axis=1)]
+            P.append(V[np.unique(down.ravel())])
+    P = np.vstack(P)
+    P = P[P[:, 2] < zmin + 0.008]
+    lo, hi = P[:, :2].min(axis=0), P[:, :2].max(axis=0)
+    pos = np.array([*((lo + hi) / 2), zmin + SOLE_THICKNESS / 2]) - b.origin
+    half = np.array([*((hi - lo) / 2 - SOLE_INSET), SOLE_THICKNESS / 2])
+    return pos, half
+
+
 def build_mjcf(bodies, files, z0=None):
     """MJCF text. z0 = spawn height of base_link; default: the saved pose's lowest vertex FOOT_CLEARANCE above
     the floor (main() then corrects it for RESET_POSE with spawn_height())."""
@@ -262,7 +286,12 @@ def build_mjcf(bodies, files, z0=None):
         es, col = files[b.name]
         for f, c in es:
             L.append(f'{sp}  <geom class="visual" mesh="{f[:-4]}" material="{cname[c]}"/>')
-        L.append(f'{sp}  <geom class="collision" name="{b.name}_col" mesh="{col[:-4]}"/>')
+        if b.name in SOLE_BODIES:  # contype 2: the mesh never meets the floor (conaffinity 1), the sole does
+            pos, half = sole_box(b)
+            L.append(f'{sp}  <geom class="collision" name="{b.name}_col" mesh="{col[:-4]}" contype="2"/>')
+            L.append(f'{sp}  <geom class="collision" name="{b.name}_sole" type="box" pos="{fmt(pos)}" size="{fmt(half)}"/>')
+        else:
+            L.append(f'{sp}  <geom class="collision" name="{b.name}_col" mesh="{col[:-4]}"/>')
         for t, name, Tw, node in b.devices:
             p = Tw[:3, 3] - b.origin
             if t == "Camera":

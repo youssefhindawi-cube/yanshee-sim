@@ -1037,7 +1037,7 @@
       const rows = {};
       for (const k of ["euler", "gyro", "accel"]) {
         const v = ["x", "y", "z"].map((a) => g[`${k}-${a}`]);
-        if (v.some((x) => typeof x === "number")) rows[k === "euler" ? "angles (deg)" : k === "gyro" ? "gyro (rad/s)" : "accel (m/s2)"] = v.map((x) => fmt(x, k === "euler" ? 1 : 2)).join("  ");
+        if (v.some((x) => typeof x === "number")) rows[k === "euler" ? "angles (deg)" : k === "gyro" ? "gyro (deg/s)" : "accel (g)"] = v.map((x) => fmt(x, k === "euler" ? 1 : 2)).join("  ");
       }
       if (g.error) rows.error = g.error;
       return h("div", {}, h("div", { class: "kv-title" }, title), kv(rows));
@@ -1065,7 +1065,7 @@
     const css = getComputedStyle(document.documentElement);
     const col = (n) => css.getPropertyValue(n).trim();
     const pts = chart.buf.map((p) => ({ t: p.t, v: p[chart.target] && p[chart.target][chart.series] })).filter((p) => p.v);
-    let span = chart.series === "euler" ? 10 : 0.5;
+    let span = chart.series === "euler" ? 10 : 30;
     pts.forEach((p) => p.v.forEach((x) => { span = Math.max(span, Math.abs(x) * 1.15); }));
     const padL = 42, padR = 8, padT = 8, padB = 18;
     const X = (t) => padL + (w - padL - padR) * (1 - (Date.now() - t) / 60000);

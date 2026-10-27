@@ -77,7 +77,7 @@ Per-instance client for the robot's REST API.
 | `SimRenderer(sim, width=640, height=480, fps=12)` | Owns one MuJoCo `Renderer` in its own thread. Copies `MjData` under the sim lock, renders outside it, and keeps the latest JPEG for named cameras: `head_camera` (FPV), `front`, `side`, `free` (orbit). `latest(cam)` returns JPEG bytes. Uses EGL when there is no display. |
 | LEDs | Chest and eye LED markers (sites or geoms added via `MjSpec` at load, no rebuild). Colour and mode (on / off / blink / breath) are animated in the renderer. |
 | Sim built-ins | Approximate keyframe files in `motions/builtin/` for the parametric built-ins: `raise`, `wave`, `stretch`, `come on` (left/right/both), `bend` (left/right), `head` (forward/left/right), `bow`, `crouch`, `reset`. Each is tested to keep the robot upright. File name: `NAME_DIRECTION.json` with spaces as `_`, e.g. `come_on_left.json`. |
-| Sim gait | An open-loop stepping generator driven by `speed_v`/`speed_h`/`steps`/`period`. It must not make the robot fall in sim; if real walking is not stable, step in place and say so in the activity text. |
+| Sim gait | A stepping generator (`SimGait`) driven by `speed_v`/`speed_h`/`steps`/`period`, with ankle balance feedback from the simulated IMU; its constants are tuned by `tools/tune_gait.py`. It must not make the robot fall in sim; if real walking is not stable, step in place and say so in the activity text. |
 | Built-ins with no sim version | In `sim` mode: "not available in simulation". In `both`: twin-follow. |
 | Sim battery | Starts at 100% and drains slowly with actuator effort. `charge()` resets it. |
 

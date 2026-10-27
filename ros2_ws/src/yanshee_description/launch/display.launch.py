@@ -19,7 +19,7 @@ from launch_ros.actions import Node
 RESET_POSE_RAD = {
     "RightShoulderRoll": 1.5708,
     "RightShoulderFlex": 2.4435,
-    "RightElbowFlex": 2.8623,
+    "RightElbowFlex": 2.8798,
     "LeftShoulderRoll": 1.5708,
     "LeftShoulderFlex": 0.6981,
     "LeftElbowFlex": 0.2618,

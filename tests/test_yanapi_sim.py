@@ -105,7 +105,7 @@ def test_gyro_has_real_field_set():
     keys = {"id"} | {f"{k}-{a}" for k in ("gyro", "accel", "compass", "euler") for a in "xyz"}
     assert keys <= set(g), keys - set(g)
     assert all(type(g[k]) is float for k in keys - {"id"})
-    assert abs(g["euler-x"]) < 5 and abs(g["euler-y"]) < 5  # torso held upright
+    assert abs(g["euler-x"] - 90) < 5 and abs(g["euler-y"]) < 5  # torso held upright (euler-x: 0 = face down)
 
 
 def test_motion_list_dedup():

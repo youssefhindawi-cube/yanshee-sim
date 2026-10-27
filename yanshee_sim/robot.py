@@ -116,6 +116,22 @@ class Robot:
         self.close()
 
 
+# -- emulated IMU (what the robot's get_sensors_gyro() reports) -----------------------------------------
+# From documents, not yet measured on hardware (README section 13). The MPU9250 sits in the chest; its DMP
+# euler angles are the aerospace roll/pitch/yaw of the chip frame x = robot's right, y = up, z = back: the
+# course lesson on falls shows euler-x about 0 face down and about +-180 on the back, and UBTECH's
+# self-balancing course sample (Yanshee_Self-balancing, self_balance.cpp) takes 91.95 as upright with a
+# backward lean raising it, so IMU_UPRIGHT_EULER_X is +90. Gyro, compass and euler use the axes
+# x = left, y = back, z = up; the accelerometer the opposite axes (right, front, down) (Yanshee-Serenade's
+# driver notes). Units: accel in g, gyro in deg/s, euler in deg, about 19 Hz. Noise densities 0.0164
+# m/s^2/sqrt(Hz) and 0.0014 rad/s/sqrt(Hz) and the gyro bias come from their Allan-variance fit.
+IMU_RATE_HZ = 19.0
+IMU_UPRIGHT_EULER_X = 90.0
+IMU_ACCEL_SIGMA_G = 0.0164 * math.sqrt(IMU_RATE_HZ) / 9.80665
+IMU_GYRO_SIGMA_DEG_S = math.degrees(0.0014 * math.sqrt(IMU_RATE_HZ))
+IMU_GYRO_BIAS_DEG_S = tuple(math.degrees(b) for b in (-0.01994, -0.00107, 0.00486))
+
+
 class SimRobot(Robot):
     """MuJoCo backend. Physics runs in a background thread at real time (or on demand with realtime=False)."""
 
@@ -153,6 +169,7 @@ class SimRobot(Robot):
         self._moves = {n: (self.data.ctrl[i], self.data.ctrl[i], 0.0, 0.0) for n, i in self._act.items()}
         self._last_time = self.data.time
         self._lock = threading.RLock()
+        self._imu_hold, self._imu_rng, self.imu_noise = None, None, True
         self.led = {"button": {"color": "blue", "mode": "breath"}, "camera": {"color": "green", "mode": "on"}}
         self.manual = manual
         self._viewer = None
@@ -315,26 +332,57 @@ class SimRobot(Robot):
             R = self.data.xmat[self.model.body("base_link").id].reshape(3, 3)
             return math.degrees(math.acos(max(-1.0, min(1.0, R[2, 2]))))
 
-    def get_sensors_gyro(self):
-        """Simulated IMU in YanAPI's shape: gyro (rad/s), accel (m/s^2), compass (model field units) and
-        euler-x/y/z (deg, roll/pitch/yaw of the IMU in the model frame; 0 when upright facing +y).
-        Axis conventions differ from the real robot (raw IMU frame there is left-back-up); see README.
-        With fixed_base the torso is welded to the world, so accel is gravity seen from the IMU and gyro is 0."""
-        import numpy as np
+    def torso_lean(self):
+        """(lean about x, lean about y, rate about x, rate about y) of the torso in the model frame, in deg and
+        deg/s: rotation about the x (right) axis, + = leaning back; about the y (forward) axis, + = leaning
+        right. Exact values from the physics, not the emulated IMU; SimGait balances on these."""
         with self._lock:
             R = self.data.site("imu").xmat.reshape(3, 3).copy()
+            w = (0.0, 0.0, 0.0) if self.fixed_base else self.data.sensor("imu_gyro").data.copy()
+        return (math.degrees(math.atan2(R[2, 1], R[2, 2])), math.degrees(math.asin(max(-1.0, min(1.0, -R[2, 0])))),
+                math.degrees(w[0]), math.degrees(w[1]))
+
+    def get_sensors_gyro(self):
+        """Emulated IMU in YanAPI's shape and, as far as the documents say, the real robot's frame and units
+        (see IMU_* above): accel in g on right/front/down axes, gyro in deg/s and compass on left/back/up axes,
+        euler-x/y/z in deg with euler-x about 0 face down, +-180 on the back and IMU_UPRIGHT_EULER_X upright,
+        euler-y the sideways lean (+ = right, assumed) and euler-z the heading (0 = facing model +y, + = turned
+        left). Samples are held for 1/IMU_RATE_HZ of sim time and carry noise and gyro bias unless imu_noise is
+        False. With fixed_base the torso is welded to the world: accel is gravity seen from the IMU, gyro 0."""
+        import numpy as np
+        with self._lock:
+            t = self.data.time
+            if self._imu_hold is not None and 0 <= t - self._imu_hold[0] < 1 / IMU_RATE_HZ:
+                return {"code": 0, "data": {"gyro": [dict(self._imu_hold[1])]}, "msg": "success"}
+            R = self.data.site("imu").xmat.reshape(3, 3).copy()
             if self.fixed_base:
-                g, a = np.zeros(3), R.T @ -self.model.opt.gravity
+                w, f = np.zeros(3), R.T @ -self.model.opt.gravity
             else:
-                g = self.data.sensor("imu_gyro").data.copy()
-                a = self.data.sensor("imu_accel").data.copy()
-            c = R.T @ self.model.opt.magnetic
-        roll = math.degrees(math.atan2(R[2, 1], R[2, 2]))
-        pitch = math.degrees(math.asin(max(-1.0, min(1.0, -R[2, 0]))))
-        yaw = math.degrees(math.atan2(R[1, 0], R[0, 0]))
-        v = {"id": 1, "gyro-x": g[0], "gyro-y": g[1], "gyro-z": g[2], "accel-x": a[0], "accel-y": a[1], "accel-z": a[2],
-             "compass-x": c[0], "compass-y": c[1], "compass-z": c[2], "euler-x": roll, "euler-y": pitch, "euler-z": yaw}
-        return {"code": 0, "data": {"gyro": [{k: (x if k == "id" else float(x)) for k, x in v.items()}]}, "msg": "success"}
+                w = self.data.sensor("imu_gyro").data.copy()
+                f = self.data.sensor("imu_accel").data.copy()
+            mag = R.T @ self.model.opt.magnetic
+        up = R.T @ np.array([0.0, 0.0, 1.0])  # world up on the site axes (x right, y forward, z up)
+        up_c = np.array([up[0], up[2], -up[1]])  # on the chip axes (x right, y up, z back)
+        sign = 1.0 if IMU_UPRIGHT_EULER_X >= 0 else -1.0
+        roll = math.degrees(math.atan2(sign * up_c[1], up_c[2]))
+        pitch = math.degrees(math.atan2(-up_c[0], math.hypot(up_c[1], up_c[2])))
+        yaw = math.degrees(math.atan2(-R[0, 1], R[1, 1]))  # heading of the forward axis, 0 = model +y
+        gyro = np.array([-w[0], -w[1], w[2]]) * (180 / math.pi)  # left, back, up
+        accel = np.array([f[0], f[1], -f[2]]) / 9.80665  # right, front, down, in g
+        comp = np.array([-mag[0], -mag[1], mag[2]])
+        if self.imu_noise:
+            if self._imu_rng is None:
+                self._imu_rng = np.random.default_rng(0)
+            gyro += np.array(IMU_GYRO_BIAS_DEG_S) + self._imu_rng.normal(0, IMU_GYRO_SIGMA_DEG_S, 3)
+            accel += self._imu_rng.normal(0, IMU_ACCEL_SIGMA_G, 3)
+        v = {"id": 1, "gyro-x": gyro[0], "gyro-y": gyro[1], "gyro-z": gyro[2],
+             "accel-x": accel[0], "accel-y": accel[1], "accel-z": accel[2],
+             "compass-x": comp[0], "compass-y": comp[1], "compass-z": comp[2],
+             "euler-x": roll, "euler-y": pitch, "euler-z": yaw}
+        entry = {k: (x if k == "id" else float(x)) for k, x in v.items()}
+        with self._lock:
+            self._imu_hold = (t, entry)
+        return {"code": 0, "data": {"gyro": [dict(entry)]}, "msg": "success"}
 
     def is_running(self):
         return self._viewer.is_running() if self._viewer is not None else True
