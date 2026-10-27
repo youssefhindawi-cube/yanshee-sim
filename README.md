@@ -522,3 +522,4 @@ Approximate, and worth tuning against the real robot:
 | `tests/` | Model and mirror tests |
 | `knowledge/` | Yanshee knowledge base, course digest and online resources |
 | `docs/` | Images used in this README |
+| `GIT_GUIDE.md` | How to commit and push to this repo (multi-account setup, helper commands) |
