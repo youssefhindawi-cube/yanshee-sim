@@ -320,9 +320,10 @@ class SimGait:
     D_PITCH = 0.03  # ankle pitch deg per deg/s of lean rate about x
     D_ROLL = 0.06  # ankle roll deg per deg/s of lean rate about y
     MAX_DEG_S = 300.0  # servo slew limit on the targets (the servo family is rated about 0.2 s per 60 deg)
+    STOP_S = 1.0  # s over which the stride and sway fade out when the walk stops (0.4 s tips the robot at full speed)
     DT = 0.02
     TUNABLE = ("crouch", "sway", "lift", "stride", "side", "back", "diag", "cycle", "cycle_per_period",
-               "k_pitch", "k_roll", "d_pitch", "d_roll", "max_deg_s")
+               "k_pitch", "k_roll", "d_pitch", "d_roll", "max_deg_s", "stop_s")
 
     def __init__(self, sim, max_tilt_deg=25.0, **tuning):
         self.sim, self.max_tilt = sim, max_tilt_deg
@@ -438,7 +439,7 @@ class SimGait:
             t = sim.data.time
             dphi = max(0.0, t - t_prev) / T
             t_prev = t
-            amp = max(0.0, amp - dt / 0.4) if stopping else min(1.0, amp + dt / (T / 2))
+            amp = max(0.0, amp - dt / self.STOP_S) if stopping else min(1.0, amp + dt / (T / 2))
             if stopping and amp <= 0.0:
                 break
             old, phi = phi, (phi + dphi) % 1.0

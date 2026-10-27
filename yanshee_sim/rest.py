@@ -246,6 +246,19 @@ class YansheeRest:
     def gait_exit(self):
         return self._delete("motions/gait", {"timestamp": 0})
 
+    def gait_decelerate(self, speed_v, speed_h=0, period=1, wave=False, stage_s=0.5):
+        """Stop an endless walk gently: step the speeds down (|5| -> 3 -> 1, |3| -> 1) with stage_s between the
+        updates, then gait_exit. exit_motion_gait at full speed freezes the legs mid-step, which can tip the
+        robot over. Returns the gait_exit reply."""
+        for stage in (3, 1):
+            v, h = max(-stage, min(stage, int(speed_v))), max(-stage, min(stage, int(speed_h)))
+            if (v, h) == (speed_v, speed_h):
+                continue
+            speed_v, speed_h = v, h
+            self.gait(v, h, 0, period, wave)
+            time.sleep(stage_s)
+        return self.gait_exit()
+
     # -- music ------------------------------------------------------------------
     def music_list(self):
         """data: {music: [{name}]} on current firmware."""

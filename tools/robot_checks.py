@@ -168,6 +168,22 @@ def gait(args):
     _confirm("The robot will walk. Put it on the floor with a clear 1 m ahead, mark its start position, "
              "and keep a hand near the red button on its head.", args.yes)
     rows = []
+    if args.stop_test:
+        # does a gentle stop (speeds stepped down, then exit) keep the robot up where a sudden exit would not?
+        for label, gentle in (("gentle stop (speeds stepped down, then exit)", True), ("sudden exit_motion_gait", False)):
+            _confirm(f"Stop test at speed_v {args.stop_speed}: 3 s of walking, then a {label}. Be ready to catch it.",
+                     args.yes)
+            _ok(rest.gait(speed_v=args.stop_speed, speed_h=0, steps=0, period=1), "gait")
+            time.sleep(3.0)
+            t0 = time.perf_counter()
+            if gentle:
+                rest.gait_decelerate(args.stop_speed, 0, 1)
+            else:
+                rest.gait_exit()
+            seconds = time.perf_counter() - t0
+            stayed = None if args.yes else input(f"  {label} took {seconds:.1f} s. Did it stay up? [y/n] ").lower().startswith("y")
+            rows.append({"stop_test": label, "speed_v": args.stop_speed, "stop_seconds": round(seconds, 2), "stayed_up": stayed})
+            time.sleep(2.0)
     try:
         for speed_v, period in settings:
             _confirm(f"Next: speed_v {speed_v}, period {period}, {args.steps} steps. Mark the start.", args.yes)
@@ -194,7 +210,7 @@ def gait(args):
             print("  " + "  ".join(f"{k} {v}" for k, v in row.items()))
     finally:
         rest.gait_exit()
-    print("  the sim's SimGait: cycle 0.7 s + 0.05 s per period unit (two steps), 16.8 cm/s at speed 5")
+    print("  the sim's SimGait: cycle 0.7 s + 0.05 s per period unit (two steps), about 19 cm/s at speed 5")
     _save("gait", {"ip": args.ip, "rows": rows})
 
 
@@ -294,6 +310,8 @@ def main(argv=None):
     common(p)
     p.add_argument("--settings", default="3,1 5,1 5,3 5,5 -3,1", help="speed_v,period pairs")
     p.add_argument("--steps", type=int, default=10)
+    p.add_argument("--stop-test", action="store_true", help="first compare a gentle stop with a sudden exit")
+    p.add_argument("--stop-speed", type=int, default=3, help="speed_v for --stop-test (start low)")
     p = sub.add_parser("inspect", help="read-only ssh dump of the Raspberry Pi")
     p.add_argument("--ip", required=True)
     p.add_argument("--user", default="pi")

@@ -120,7 +120,9 @@ ctl.close()                                # stop the activity, renderer and twi
 Return details: every method returns a dict with `"ok"`, except `list_actions()` and `motion_files()` (lists) and
 `photo()` (JPEG bytes, or `{"ok": False, "error"}`). `gait`: `speed_h > 0` steps to the robot's left; `period=0` stops.
 `set_servos` refusals carry `blocked: [[body, body], ...]`; `play_motion` refusals carry `errors`, `warnings`, `collisions`.
-`gait_stop()` sends `exit_motion_gait` to a connected robot whatever the mode (like STOP). `set_servo_mode("program")`
+`gait_stop()` stops gently: the sim fades its stride out over `SimGait.STOP_S` (1 s), a robot walk is stepped down
+`5 → 3 → 1` (0.5 s apart) before `exit_motion_gait` (`rest.gait_decelerate`), because an exit at speed can tip the robot;
+a connected robot always gets `gait_exit` whatever the mode. Only STOP (`stop_all`) exits at once. `set_servo_mode("program")`
 on robot leg servos adds a warning (the robot cannot stand). In `check_motion`, `collisions[].frame` is 0-based
 (`len(frames)` = the `end_in_reset` move), `collisions[].label` names it ("frame 1", "return to reset") and `at` is the
 fraction of that move; `validate` messages count frames from 1 too.

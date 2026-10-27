@@ -379,6 +379,29 @@ def test_unreachable_robot():
     assert c.connect("")["ok"] is False and c.state()["robot"]["connected"] is False
 
 
+def test_robot_gait_stop_decelerates():
+    """A normal stop steps the robot's walking speeds down before exit_motion_gait; STOP exits at once."""
+    with Connected("robot") as (c, srv):
+        assert c.gait(5, 2, steps=0)["ok"]
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
+        srv.state.log.clear()
+        t0 = time.monotonic()
+        r = c.gait_stop()
+        assert r["ok"] and r.get("decelerated") and 0.8 < time.monotonic() - t0 < 4, r
+        speeds = [(e[3]["speed_v"], e[3]["speed_h"]) for e in requests(srv, "PUT", "motions/gait")]
+        assert speeds == [(3, 2), (1, 1)], speeds
+        assert requests(srv, "DELETE", "motions/gait") and c.state()["activity"]["kind"] == "idle"
+        assert c.gait(-4, 0, steps=0)["ok"]
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
+        srv.state.log.clear()
+        assert c.stop_all()["ok"]
+        assert not requests(srv, "PUT", "motions/gait") and requests(srv, "DELETE", "motions/gait")
+        assert c.gait(1, 0, steps=0)["ok"]  # slow walks need no ramp
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
+        srv.state.log.clear()
+        assert c.gait_stop()["ok"] and not requests(srv, "PUT", "motions/gait")
+
+
 def test_robot_mode_gate_twin_and_stop():
     with Connected("robot") as (c, srv):
         st = c.state()

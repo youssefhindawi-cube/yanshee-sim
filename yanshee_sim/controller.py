@@ -185,6 +185,7 @@ class _Activity:
         self.detail, self.params, self.error = detail, {}, None
         self.started, self.mono = time.time(), time.monotonic()
         self.stop, self.done = threading.Event(), threading.Event()
+        self.hard = False  # STOP: end a robot walk at once instead of decelerating first
         self.thread, self.gen = None, None
         self.lease_s = self.lease_until = None  # dead-man: stop unless keepalive() is called in time
 
@@ -748,6 +749,7 @@ class Controller:
             self._music = None
         try:
             if act is not None:
+                act.hard = True
                 act.stop.set()
             self.sim.stop_all()
             res = robot.stop_all() if robot is not None else None
@@ -1219,21 +1221,33 @@ class Controller:
                 seen = True
             elif status in (3, 5, 7, 8) and (seen or time.monotonic() - t0 > 1.5):
                 break
-        self._call("gait exit", robot.rest.gait_exit)
+        p = act.params
+        if act.stop.is_set() and not act.hard and (p.get("speed_v") or p.get("speed_h")):
+            # a normal stop (release, gait_stop, lost lease): fade the speeds out first, an exit at speed can tip the robot
+            self._call("gait stop", lambda: robot.rest.gait_decelerate(p.get("speed_v", 0), p.get("speed_h", 0),
+                                                                        p.get("period", 1), p.get("wave", False)))
+        else:
+            self._call("gait exit", robot.rest.gait_exit)
 
     def gait_stop(self):
-        """Stop walking (sim: finish the step and stand; robot: exit_motion_gait). The robot gets gait_exit whenever
-        one is connected, whatever the mode, like STOP (a walk may have started just before a mode switch)."""
+        """Stop walking gently: the sim fades its stride out (SimGait.STOP_S), a robot walk steps its speeds down over
+        about a second before exit_motion_gait (rest.gait_decelerate), since an exit at speed can tip the robot.
+        STOP (stop_all) exits at once instead. A connected robot gets gait_exit whatever the mode (a walk may have
+        started just before a mode switch)."""
         act = self._activity
-        if act is not None and act.kind == "gait" and not act.done.is_set():
+        running = act is not None and act.kind == "gait" and not act.done.is_set()
+        if running:
             act.stop.set()
         with self._lock:
             robot = self.robot
+        if running and robot is not None and act.target != "sim":
+            act.done.wait(6.0)  # the activity thread decelerates and sends gait_exit
+            return {"ok": True, "decelerated": True}
         if robot is not None:
             res, err = self._call("gait exit", robot.rest.gait_exit)
             if err:
                 return self._fail(err)
-        if act is not None and act.kind == "gait":
+        if running:
             act.done.wait(5.0)
         return {"ok": True}
 

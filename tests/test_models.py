@@ -226,6 +226,37 @@ def test_sim_program_mode_is_limp():
     bot.close()
 
 
+def test_sim_gait_stops_without_falling():
+    """A stop at full speed, at any point of the step cycle, must fade the walk out rather than freeze it
+    (a 0.4 s fade-out tipped the robot over in half the cases)."""
+    import threading
+    import time
+    from yanshee_sim.sim_extras import SimGait
+    for stop_at in (2.5, 2.62, 2.74, 2.86):
+        bot = SimRobot(viewer=False, realtime=False)
+        bot.wait(0.5)
+        gait, stop, tilt = SimGait(bot), threading.Event(), [0.0]
+        stopped = [False]
+        wait = bot.wait
+
+        def watched(seconds):
+            wait(seconds)
+            if stopped[0]:
+                tilt[0] = max(tilt[0], bot.torso_tilt_deg())
+        bot.wait = watched
+        th = threading.Thread(target=lambda: gait.run({"speed_v": 5, "period": 1, "steps": 0}, stop))
+        th.start()
+        while bot.data.time < stop_at:
+            time.sleep(0.001)
+        stopped[0] = True
+        stop.set()
+        th.join(20)
+        wait(1.0)
+        tilt[0] = max(tilt[0], bot.torso_tilt_deg())
+        bot.close()
+        assert gait.status == "stopped" and tilt[0] < 15, (stop_at, gait.status, tilt[0])
+
+
 def test_sim_imu_fields():
     keys = {"id", "gyro-x", "gyro-y", "gyro-z", "accel-x", "accel-y", "accel-z",
             "compass-x", "compass-y", "compass-z", "euler-x", "euler-y", "euler-z"}

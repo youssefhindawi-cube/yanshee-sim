@@ -72,6 +72,26 @@ cm/s), keeping `python3 tools/tune_gait.py --check` passing.
 Also note how the robot walks (does it sway, does it lift the feet, step length) and film it from the side
 and front: the sim gait is a guess and can be reshaped to look like the real one.
 
+### 5b. Stopping without tipping over
+
+A walk that is frozen mid-step at speed can tip the robot: in the sim, a 0.4 s fade-out at full speed fell in
+half the cases and a 1 s fade-out never did (`SimGait.STOP_S` is now 1 s). Nobody knows how the firmware
+decelerates on `exit_motion_gait`, so the software stops the robot the gentle way and the session checks it:
+
+- The gentle stop is `rest.gait_decelerate()`: the speeds are stepped down (`5 → 3 → 1`, 0.5 s apart) with
+  `control_motion_gait` updates, then `exit_motion_gait`. Releasing the GUI's D-pad, `gait_stop()` and a lost
+  dead-man lease all use it. **STOP (the red button in the GUI and the one on the robot's head) exits at
+  once** — use it for emergencies and expect the robot may need catching.
+- Test it before any fast walking: `python3 tools/robot_checks.py gait --ip IP --stop-test` walks 3 s at
+  `speed_v 3`, stops gently, then repeats with a sudden exit; you answer whether it stayed up and the answers
+  are saved. Only move on to `--stop-speed 5` if speed 3 survived both. Stand behind the robot with a hand
+  ready at its shoulders: a stop at speed tips it forward.
+- If the sudden exit is fine on the real robot, the firmware already decelerates and `stage_s` in
+  `rest.gait_decelerate` can be shortened; if even the gentle stop tips it, add a stage (`2`) or lengthen
+  `stage_s` and re-test.
+- When the gait is recorded with `record_real_motion.py`, record the stop too: the sim's `STOP_S` should
+  match how long the real robot takes to settle.
+
 ## 6. Motions both ways
 
 - Robot → sim: the `.hts` files from step 1 are exact. For dances or motions that only exist as names, record
