@@ -235,6 +235,7 @@ class Controller:
         self._conn_lock = threading.RLock()  # connect / disconnect / set_mode
         self.mode = "sim"
         self.sim = SimRobot(viewer=sim_viewer, fixed_base=fixed_base, spec_hook=sim_extras.add_leds)
+        self.sim.on_key = self._viewer_key  # WASD/arrows, Q/E, X/Esc in the viewer window (when there is one)
         self.checker = motion_mod.CollisionChecker()
         self.renderer = sim_extras.SimRenderer(self.sim, *render_size, fps=fps) if renderer else None
         self.battery = sim_extras.SimBattery()
@@ -249,6 +250,11 @@ class Controller:
         self._settings = {"volume": 50, "language": "en", "fall_management": False}
         self._leds = {k: dict(v) for k, v in self.sim.led.items()}
         self._tilt, self._fallen, self._fallen_since = 0.0, False, None
+        self._balance_margin = None  # m, from SimRobot.balance() at the monitor's rate
+        # sim mode, idle and pushed: take a quick step towards the capture point. Off by default: in tests it did
+        # not save the robot from a 0.5 N.s shove at the head (the step starts too late) and once made it worse.
+        self.reflex_enabled = False
+        self._reflex_at = 0.0
         self._running = True
         self._monitor = threading.Thread(target=self._monitor_loop, name="ctl-monitor", daemon=True)
         self._monitor.start()
@@ -364,6 +370,7 @@ class Controller:
             try:
                 self.battery.update(self.sim, now - last)
                 tilt = self.sim.torso_tilt_deg()
+                self._balance_margin = self.sim.balance()["margin_m"]
             except Exception as e:  # never let the monitor die
                 log.warning("monitor: %s", e)
                 continue
@@ -375,8 +382,16 @@ class Controller:
                 self._event("warn", f"{act.kind} '{act.name}' stopped: no keepalive for {act.lease_s:g} s "
                                     "(controller page closed or connection lost)")
             fallen = tilt > FALL_DEG and not self.sim.fixed_base
+            margin = self._balance_margin
+            if self.reflex_enabled and margin is not None and margin > self.REFLEX_MARGIN_M and not fallen and \
+                    tilt < 30 and not self.sim.fixed_base and self.mode == "sim" and now - self._reflex_at > 2.0 and \
+                    (act is None or act.done.is_set()) and not self._stopping:
+                self._reflex_at = now  # pushed while standing: a quick step towards where it is falling
+                self._event("info", f"balance reflex: stepping to catch {100 * margin:.1f} cm of momentum")
+                threading.Thread(target=self.gait, args=(0, 0), kwargs={"steps": 2, "period": 1, "quick": True},
+                                 name="ctl-reflex", daemon=True).start()
             if fallen and not self._fallen:
-                self._event("warn", "the simulated robot fell over (press Reset to stand it up)")
+                self._event("warn", "the simulated robot fell over (press Get up)")
                 self._fallen_since = now
             self._tilt, self._fallen = tilt, fallen
             if fallen and self._twin_active() and now - (self._fallen_since or now) > 2.0:
@@ -732,7 +747,8 @@ class Controller:
         renderer_error = self.renderer.error if self.renderer is not None else "renderer disabled"
         return {"mode": mode, "robot": robot_info,
                 "sim": {"battery": round(self.battery.percent, 1), "tilt_deg": round(self._tilt, 1),
-                        "fallen": self._fallen, "fixed_base": self.sim.fixed_base, "renderer_error": renderer_error},
+                        "fallen": self._fallen, "fixed_base": self.sim.fixed_base, "renderer_error": renderer_error,
+                        "balance_margin_cm": None if self._balance_margin is None else round(100 * self._balance_margin, 1)},
                 "servos": {"sim": self._sim_angles(), "robot": robot_servos},
                 "activity": activity, "leds": leds, **settings,
                 "limits": {n: list(v) for n, v in LIMITS.items()}, "reset_pose": dict(RESET_POSE),
@@ -763,6 +779,13 @@ class Controller:
             self._event("warn", f"stop: some robot stops failed ({res.get('msg')})")
         else:
             self._event("info", "stopped" + (" (robot servos held where they were)" if held else ""))
+        try:  # STOP holds the pose: say so when that pose is a bent one (a halted bow, crouch or squat)
+            targets = self.sim.get_target_angles()
+            off = max(abs(targets[n] - RESET_POSE[n]) for n in RESET_POSE if "Hip" in n or "Knee" in n or "Ankle" in n)
+            if off > 10 or self.sim.torso_tilt_deg() > 10:
+                self._event("info", "stopped in a bent pose: press Reset to stand straight")
+        except Exception:  # noqa: BLE001 - a hint only
+            pass
         return {"ok": True, "robot": res, "held": bool(held)}
 
     def reset(self):
@@ -1120,31 +1143,41 @@ class Controller:
     # -- gait -------------------------------------------------------------------------------------
     def _sim_gait(self, act):
         gait = sim_extras.SimGait(self.sim)
-        act.detail = "sim: " + gait.describe(act.params.get("speed_v", 0), act.params.get("speed_h", 0))
+
+        def text(p):
+            return "sim: " + gait.describe(p.get("speed_v", 0), p.get("speed_h", 0), p.get("turn", 0))
+        act.detail = text(act.params)
 
         def on_step(n):
-            act.detail = "sim: " + gait.describe(act.params.get("speed_v", 0), act.params.get("speed_h", 0)) + \
-                f" ({n} steps)"
+            act.detail = text(act.params) + f" ({n} steps)"
         status = gait.run(act.params, act.stop, on_step)
         if status.startswith("stopped: torso"):
             self._event("warn", f"sim gait {status}")
 
-    def gait(self, speed_v, speed_h, steps=0, period=1, wave=False, lease_s=None):
+    def gait(self, speed_v, speed_h, steps=0, period=1, wave=False, lease_s=None, turn=0, quick=False):
         """Walk (control_motion_gait). speed_v -5..5 (+ forward), speed_h -5..5 (+ left), steps 0 = until
         gait_stop(), period 1..5 (0 stops). Calling it while walking changes the speeds in place.
-        lease_s (dead-man, for steps=0): the walk stops unless gait() or gait_keepalive() is called again within
-        lease_s seconds. None = no lease (the web server always sets one for steps=0)."""
-        vals = (speed_v, speed_h, steps, period)
+        turn -5..5 (+ anticlockwise) rotates in place, simulator only: the robot's gait cannot turn, it uses the
+        built-in "turn around" motion instead (play_action). lease_s (dead-man, for steps=0): the walk stops
+        unless gait() or gait_keepalive() is called again within lease_s seconds. None = no lease (the web
+        server always sets one for steps=0)."""
+        vals = (speed_v, speed_h, steps, period, turn)
         if not all(isinstance(v, int) and not isinstance(v, bool) for v in vals) or not (
-                -5 <= speed_v <= 5 and -5 <= speed_h <= 5 and 0 <= steps <= 10000 and 0 <= period <= 5):
-            return self._fail("gait: speed_v and speed_h must be ints -5..5, steps >= 0, period 0..5", level="warn")
+                -5 <= speed_v <= 5 and -5 <= speed_h <= 5 and 0 <= steps <= 10000 and 0 <= period <= 5
+                and -5 <= turn <= 5):
+            return self._fail("gait: speed_v, speed_h and turn must be ints -5..5, steps >= 0, period 0..5",
+                              level="warn")
         if lease_s is not None and (not _num(lease_s) or lease_s <= 0):
             return self._fail("gait: lease_s must be a number > 0 (or None)", level="warn")
         if period == 0:
             return self.gait_stop()
         wave = bool(wave)
         gen, use_sim, use_robot, robot = self._snapshot()
-        params = {"speed_v": speed_v, "speed_h": speed_h, "steps": steps, "period": period, "wave": wave}
+        if turn and use_robot:
+            return self._fail("the robot's gait cannot turn in place: use the 'turn around' built-in "
+                              "(play_action('turn around', 'left'|'right')); turning is simulator-only", level="warn")
+        params = {"speed_v": speed_v, "speed_h": speed_h, "steps": steps, "period": period, "wave": wave,
+                  "turn": turn, "quick": bool(quick)}
         target = self._target_name(use_sim, use_robot)
         lease = lease_s if not steps else None
         with self._act_lock:
@@ -1160,6 +1193,7 @@ class Controller:
                         self._call("gait exit", robot.rest.gait_exit)
                         return self._fail("gait update cancelled by STOP", level="warn")
                 act.params.update(params)
+                act.name = sim_extras.SimGait.describe(speed_v, speed_h, turn)
                 act.lease_s = lease
                 act.lease_until = None
                 act.keepalive()
@@ -1179,7 +1213,7 @@ class Controller:
                     self._undo_robot(robot)
                     return self._fail("gait cancelled by STOP", level="warn")
             duration = steps * sim_extras.SimGait.cycle_time(period) / 2 if steps else None
-            act = _Activity("gait", sim_extras.SimGait.describe(speed_v, speed_h), target, duration=duration,
+            act = _Activity("gait", sim_extras.SimGait.describe(speed_v, speed_h, turn), target, duration=duration,
                             twin=use_robot and use_sim, detail="sim follows the robot" if use_robot and use_sim else "")
             act.params, act.lease_s = params, lease
 
@@ -1192,9 +1226,136 @@ class Controller:
                 if use_robot:
                     self._undo_robot(robot)
                 return self._fail("gait cancelled by STOP", level="warn")
-        self._event("info", f"gait v={speed_v} h={speed_h} steps={steps or 'until stopped'} on {target}"
+        self._event("info", f"gait v={speed_v} h={speed_h}{f' turn={turn}' if turn else ''} "
+                            f"steps={steps or 'until stopped'} on {target}"
                     + (f" (stops without a keepalive for {lease:g} s)" if lease else ""))
         return {"ok": True, "target": target, "updated": False}
+
+    REFLEX_MARGIN_M = 0.015  # capture point this far outside the support circle while standing = about to tip
+
+    def get_up(self):
+        """Stand up after a fall. Robot (robot/both modes): the built-in GetupFront or GetupRear, chosen from the
+        robot's own IMU (euler-x about 0 face down, about 180 on the back); the twin follows. Sim: the motion
+        found by tools/tune_getup.py for that posture (motions/builtin/getup_front.json, getup_rear.json); when
+        there is none, or the robot is still down 2 s after it, respawn() stands it up and an event says so."""
+        gen, use_sim, use_robot, robot = self._snapshot()
+        if use_robot:
+            res, err = self._call("gyro", robot.rest.gyro)
+            if err:
+                return self._fail(f"get up: cannot read the robot's IMU ({err})")
+            try:
+                ex = float(((res.get("data") or {}).get("gyro") or [{}])[0].get("euler-x", 90))
+            except (TypeError, ValueError):
+                ex = 90.0
+            return self.play_action("GetupFront" if abs(ex) < 90 else "GetupRear")
+        if self.sim.fixed_base:
+            return self._fail("get up: the simulated torso is held in the air (fixed base)", level="warn")
+        if self.sim.torso_tilt_deg() < 30:
+            return {"ok": True, "target": "sim", "standing": True}
+        ex = self.sim.get_sensors_gyro()["data"]["gyro"][0]["euler-x"]
+        posture = "front" if abs(ex) < 90 else "rear"
+        mo = sim_extras.load_builtin("getup", posture)
+        with self._act_lock:
+            why = self._begin(gen, None)
+            if why:
+                return self._fail(f"get up {why}", level="warn")
+            act = _Activity("action", f"get up ({posture})", "sim",
+                            duration=(motion_mod.duration_s(mo) + 2.0) if mo else 1.0)
+
+            def run(a):
+                if mo is not None:
+                    self._sim_play(a, mo, 1.0)
+                    if not a.stop.is_set():
+                        self.sim.wait(1.5)
+                if a.stop.is_set():
+                    return
+                if self.sim.torso_tilt_deg() > 30:
+                    self.sim.respawn()
+                    self._event("warn", "the simulated robot could not get up by itself and was stood up"
+                                + ("" if mo else f" (no getup_{posture} motion in motions/builtin)"))
+                else:
+                    self._event("info", f"the simulated robot got up from lying {'face down' if posture == 'front' else 'on its back'}")
+            if self._launch(act, run, gen) is None:
+                return self._fail("get up cancelled by STOP", level="warn")
+        return {"ok": True, "target": "sim", "posture": posture, "motion": mo is not None}
+
+    TIP_DIRECTIONS = {"front": (0.0, 1.0), "back": (0.0, -1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}
+
+    def tip_over(self, direction="front", force_n=9.0, seconds=0.5):
+        """Simulator only: push the standing robot over gently (a small, sustained force at the head, so it folds
+        rather than slams) to test fall detection and get_up(). Refused with a robot connected in robot/both mode."""
+        gen, use_sim, use_robot, robot = self._snapshot()
+        if use_robot:
+            return self._fail("tip over is a simulator test: switch to Sim mode (the real robot is never pushed)", level="warn")
+        if direction not in self.TIP_DIRECTIONS:
+            return self._fail(f"tip over: direction must be one of {list(self.TIP_DIRECTIONS)}", level="warn")
+        if self.sim.fixed_base:
+            return self._fail("tip over: the torso is held in the air (fixed base)", level="warn")
+        if self.sim.torso_tilt_deg() > 30:
+            return {"ok": True, "target": "sim", "already_down": True}
+        with self._act_lock:
+            why = self._begin(gen, None)
+            if why:
+                return self._fail(f"tip over {why}", level="warn")
+            act = _Activity("action", f"tip over ({direction})", "sim", duration=seconds + 2.0)
+            dx, dy = self.TIP_DIRECTIONS[direction]
+
+            def run(a):
+                head = self.sim.model.body("NeckLR").id
+                with self.sim._lock:
+                    self.sim.data.xfrc_applied[head] = [force_n * dx, force_n * dy, 0, 0, 0, 0]
+                try:
+                    t_end = time.monotonic() + seconds
+                    while time.monotonic() < t_end and not a.stop.is_set():
+                        time.sleep(0.02)
+                finally:
+                    with self.sim._lock:
+                        self.sim.data.xfrc_applied[head] = 0
+                if not a.stop.is_set():
+                    self.sim.wait(2.0)
+                    tilt = self.sim.torso_tilt_deg()
+                    self._event("info", f"tip over: torso at {tilt:.0f} deg" + (" (fallen: try Get up)" if tilt > 45 else " (it kept its feet)"))
+            if self._launch(act, run, gen) is None:
+                return self._fail("tip over cancelled by STOP", level="warn")
+        self._event("info", f"tipping the simulated robot over {direction} ({force_n:g} N at the head for {seconds:g} s)")
+        return {"ok": True, "target": "sim", "direction": direction}
+
+    # keys in the MuJoCo viewer window (GLFW codes): WASD / arrows walk, Q / E turn, X / Esc STOP
+    VIEWER_KEYS = {87: (1, 0, 0), 265: (1, 0, 0), 83: (-1, 0, 0), 264: (-1, 0, 0), 65: (0, 1, 0), 263: (0, 1, 0),
+                   68: (0, -1, 0), 262: (0, -1, 0), 81: (0, 0, 1), 69: (0, 0, -1)}
+    VIEWER_STOP_KEYS = (88, 256)
+    VIEWER_SPEED = 3
+    VIEWER_LEASE_S = 0.9  # a held key repeats every few tens of ms after about half a second: the walk ends this
+    # long after the last repeat, so releasing the key stops it (the viewer reports no key releases)
+
+    def _viewer_key(self, keycode):
+        """Drive the walk from the MuJoCo viewer window (SimRobot.on_key). Called on the viewer's thread for every
+        key press and repeat: a new direction starts a leased walk, a repeat renews the lease, X or Esc is STOP.
+        In robot or both mode Q/E play the robot's turn-around built-in once per press."""
+        if keycode in self.VIEWER_STOP_KEYS:
+            with self._lock:
+                stopping = self._stopping > 0
+            if not stopping:  # a held key repeats every few tens of ms: one STOP is enough
+                threading.Thread(target=self.stop_all, name="viewer-stop", daemon=True).start()
+            return
+        vec = self.VIEWER_KEYS.get(keycode)
+        if vec is None:
+            return
+        v, h, t = (x * self.VIEWER_SPEED for x in vec)
+        act = self._activity
+        if t and self.mode != "sim":
+            if act is not None and act.kind == "action" and not act.done.is_set() and "turn around" in act.name:
+                return  # still turning: ignore the key repeats
+            threading.Thread(target=self.play_action, args=("turn around", "left" if t > 0 else "right"),
+                             name="viewer-turn", daemon=True).start()
+            return
+        wanted = {"speed_v": v, "speed_h": h, "turn": t}
+        if act is not None and act.kind == "gait" and not act.done.is_set() and not act.stop.is_set() and \
+                all(act.params.get(k, 0) == val for k, val in wanted.items()):
+            act.keepalive()
+            return
+        threading.Thread(target=self.gait, args=(v, h), name="viewer-walk", daemon=True,
+                         kwargs={"steps": 0, "period": 1, "lease_s": self.VIEWER_LEASE_S, "turn": t}).start()
 
     def gait_keepalive(self):
         """Refresh the dead-man lease of the running walk (see gait(lease_s=)). {"ok", "walking"}."""

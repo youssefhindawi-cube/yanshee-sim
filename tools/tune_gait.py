@@ -34,7 +34,7 @@ STEPS = 16
 # scenarios every finalist must pass: (speed_v, speed_h, period, wave)
 SCENARIOS = [(5, 0, 1, False), (3, 0, 1, False), (1, 0, 1, False), (-3, 0, 1, False), (0, 3, 1, False),
              (0, -3, 1, False), (5, 0, 3, False), (5, 0, 5, False), (3, 3, 1, False), (5, 0, 1, True),
-             (0, 0, 1, False)]
+             (0, 0, 1, False), (0, 0, 1, False, 3), (0, 0, 1, False, -3)]  # a 5th value is `turn`
 HARD = [(5, 0, 1, False), (-3, 0, 1, False), (3, 3, 1, False), (5, 0, 5, False)]  # stage 1 filter
 FULL = {"cycle": [0.8, 1.0], "sway": [6, 8, 10], "lift": [14, 18], "stride": [4, 5, 6], "crouch": [10, 16],
         "d_roll": [0.02, 0.04, 0.06], "k_pitch": [0, 0.5], "side": [1, 1.5], "back": [0.5, 0.8], "diag": [0.5, 1],
@@ -54,7 +54,9 @@ def _init():
 def evaluate(job):
     """job = (tuning dict, scenario tuple) -> result dict."""
     from yanshee_sim.sim_extras import SimGait
-    tuning, (speed_v, speed_h, period, wave) = job
+    tuning, scenario = job
+    speed_v, speed_h, period, wave = scenario[:4]
+    turn = scenario[4] if len(scenario) > 4 else 0
     bot = _bot
     bot.respawn()
     bot.wait(0.5)
@@ -68,8 +70,8 @@ def evaluate(job):
     try:
         gait = SimGait(bot, max_tilt_deg=MAX_TILT, **tuning)
         p0, t0 = bot.data.qpos[:2].copy(), bot.data.time
-        status = gait.run({"speed_v": speed_v, "speed_h": speed_h, "period": period, "steps": STEPS, "wave": wave},
-                          threading.Event())
+        status = gait.run({"speed_v": speed_v, "speed_h": speed_h, "period": period, "steps": STEPS, "wave": wave,
+                           "turn": turn}, threading.Event())
         wait(0.5)
         moved, dt = bot.data.qpos[:2] - p0, bot.data.time - t0
         w, x, y, z = bot.data.qpos[3:7]
@@ -84,8 +86,11 @@ def evaluate(job):
         across = abs(-moved[0] * want[1] + moved[1] * want[0]) / norm
     else:
         along, across = 0.0, math.hypot(*moved)
-    ok = status == "done" and tilt[0] < MAX_TILT and abs(yaw) < MAX_YAW
-    return {"tuning": tuning, "scenario": [speed_v, speed_h, period, wave], "ok": ok, "status": status,
+    if turn:  # turning in place: it must turn the right way, not keep its heading
+        ok = status == "done" and tilt[0] < MAX_TILT and yaw * turn > 5
+    else:
+        ok = status == "done" and tilt[0] < MAX_TILT and abs(yaw) < MAX_YAW
+    return {"tuning": tuning, "scenario": list(scenario), "ok": ok, "status": status,
             "speed_cm_s": round(100 * along / dt, 2), "drift_cm_s": round(100 * across / dt, 2),
             "yaw_deg": round(yaw, 1), "max_tilt_deg": round(tilt[0], 1), "sim_s": round(dt, 1)}
 

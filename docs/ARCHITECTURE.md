@@ -129,7 +129,7 @@ fraction of that move; `validate` messages count frames from 1 too.
 
 Rules:
 - All public methods are thread-safe (the server calls them from a thread pool).
-- Long operations (motion playback, built-ins, gait) run in **one** cancellable activity thread. Starting a new activity cancels the previous one first.
+- Long operations (motion playback, built-ins, gait) run in **one** cancellable activity thread. Starting a new activity cancels the previous one first. This is why a gesture pressed during a walk ends the walk instead of playing on top of it; only the gait's own `wave` (arm swing) flag changes in place while walking. The planned extension is **servo-group lanes** (legs / arms / head): each activity declares the groups it owns, `_begin()` cancels only overlapping lanes, the sim merges per-servo targets already (`SimRobot._send`), and on the robot an arm lane uses a `H_*` v2 layered motion or `set_servos_angles_layers` while the gait runs, falling back to the `wave` flag. It waits for the hardware checkpoints in the test plan (what the firmware does with servo commands during the gait is undocumented).
 - Robot errors are caught and reported as events plus a `{"ok": False, "error": ...}` result. They never crash the server.
   Only `set_mode` raises (`ModeError`).
 - A robot that disconnects while a command is being checked gives `{"ok": False, "error": "... robot disconnected"}`
@@ -164,8 +164,10 @@ a thread pool, never on the event loop.
 | GET | `/api/actions` | | Action list |
 | POST | `/api/action` | `{name, direction, speed, repeat, version}` | Play a built-in |
 | POST | `/api/action/pause` / `/api/action/resume` | | Pause / resume the robot built-in that is playing |
-| POST | `/api/gait` | `{speed_v, speed_h, steps, period, wave, lease}` | Walk. `steps=0` is a dead-man lease: it stops unless `/api/gait` or `/api/gait/keepalive` arrives within `lease` s (default 1.5, 0.5-10) |
+| POST | `/api/gait` | `{speed_v, speed_h, turn, steps, period, wave, lease}` | Walk. `steps=0` is a dead-man lease: it stops unless `/api/gait` or `/api/gait/keepalive` arrives within `lease` s (default 1.5, 0.5-10). `turn` −5..5 (+ anticlockwise) rotates in place, simulator only; the robot refuses it (its "turn around" built-in is the way) |
 | POST | `/api/gait/keepalive` | | Refresh the walk's lease; returns `{walking}` |
+| POST | `/api/getup` | | Stand up after a fall: robot GetupFront/GetupRear by its IMU; sim its get-up motion, or respawn |
+| POST | `/api/tipover` | `{direction: front|back|left|right}` | Simulator test: a gentle push at the head (9 N, 0.5 s) tips the robot over; refused in robot/both mode |
 | POST | `/api/gait/stop` | | |
 | GET | `/api/music` | | Music list |
 | POST | `/api/music` | `{name}` | |
@@ -248,7 +250,19 @@ A single page with no build step (plain HTML/CSS/JS, no CDN dependencies, so it 
 | **Log** | Event stream. |
 
 Tabs have URL hashes (`#motion`, `#servos`, `#settings`, `#voice`, `#log`). Keys: Esc = STOP (anywhere); arrows or WASD
-walk while held (Motion tab). Walking always stops on release, pointer leave/cancel, window blur and page hide; while a
+walk and Q/E rotate while held, from any tab (not while a field has the focus or a dialog is open). The two Rotate
+buttons are hold-to-turn like the D-pad; in robot or both mode a rotate press plays the robot's "turn around" built-in
+once instead (the gait cannot turn). The same keys work in the MuJoCo window when the server runs with `--viewer`:
+`SimRobot.on_key` receives GLFW key codes (presses and repeats, no releases), and `Controller._viewer_key` starts a walk
+with a 0.9 s lease that every repeat renews, so releasing the key stops the walk; X or Esc there is STOP.
+LEDs: `SimRobot.paint_leds()` writes the LED colours and glow into the shared model (`geom_rgba`, `mat_emission`)
+every 20 ms of sim time and on every `set_led`, so the viewer window and the offscreen cameras render identical LEDs.
+Balance: `SimRobot.balance()` (capture point vs support circle) is sampled by the monitor and exposed as
+`state.sim.balance_margin_cm`; `SimGait` ramps every direction change over 2 s, stops with a two-stage 1.5 s fade
+(stride first, stepping after, ankle balance at full gain throughout), winds the stride down when the margin
+exceeds 3.5 cm, and places the swing foot towards the capture point. With nothing held (`steps=0`, all speeds 0) the
+sim stands in its crouch instead of stepping in place (stepping after a walk used to spin it slowly). `Controller.get_up()` and `/api/getup`
+stand the robot up after a fall (sim: `motions/builtin/getup_*.json` if present, else `respawn()`). Walking always stops on release, pointer leave/cancel, window blur and page hide; while a
 direction is held the page sends `/api/gait/keepalive` every 0.4 s, so a lost tablet stops the walk within 1.5 s. A gait
 request that got no answer is followed by a stop, and release sends a stop whenever a gait request went out without a
 confirmed stop since. While the WebSocket is down the page polls `/api/state` every second and shows a banner 1.5 s

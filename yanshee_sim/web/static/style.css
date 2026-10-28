@@ -262,8 +262,12 @@ input[type="range"] { width: 100%; height: 34px; accent-color: var(--accent); cu
 .dpad button.held { background: var(--mode); color: #fff; border-color: var(--mode); box-shadow: 0 1px 0 var(--border); transform: translateY(2px); }
 .dpad .dpad-stop { font-size: 1.3rem; color: var(--danger); }
 .walk-side { flex: 1 1 180px; min-width: 0; }
+.dpad-extra { display: flex; flex-direction: column; gap: 8px; width: 244px; max-width: 100%; }
+.dpad-extra .getup { font-size: 1.05rem; padding: 10px; }
 .turns { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-.turns .btn { flex: 1 1 120px; }
+.turns .btn { font-size: 1.05rem; padding: 10px 6px; }
+.turns .btn { flex: 1 1 120px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.turns .btn.held { background: var(--mode); color: #fff; border-color: var(--mode); }
 
 /* ---------- tiles ---------- */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }

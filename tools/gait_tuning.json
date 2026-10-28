@@ -3013,5 +3013,15 @@
  ],
  "max_tilt": 15.0,
  "max_yaw": 25.0,
- "steps": 16
+ "steps": 16,
+ "landing_set_2026_10_28": {
+  "note": "Applied after a 6,000-run robustness sweep (stop phases, pushes, direction chains, model variations): STOP_S 1.5 with a two-stage fade and the balance held at full gain, K_PITCH 0.6, D_PITCH 0.06, CYCLE 0.75, RAMP_S 2.0. The sweep winner's other constants are unchanged.",
+  "constants": {
+   "stop_s": 1.5,
+   "k_pitch": 0.6,
+   "d_pitch": 0.06,
+   "cycle": 0.75,
+   "ramp_s": 2.0
+  }
+ }
 }

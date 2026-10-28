@@ -20,28 +20,29 @@ import weakref
 if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
     os.environ.setdefault("MUJOCO_GL", "egl")  # must happen before mujoco is first imported
 
-from .robot import ROOT
+from .robot import LED_GEOMS, LED_RGB, ROOT, led_rgba, paint_led_model  # noqa: F401 - re-exported
 from .servos import LIMITS, RESET_POSE
 
 BUILTIN_DIR = os.path.join(ROOT, "motions", "builtin")
 
 # -- LEDs ----------------------------------------------------------------------
-LED_GEOMS = {"button": ("led_chest",), "camera": ("led_eye_left", "led_eye_right")}
-LED_RGB = {"white": (1.0, 1.0, 1.0), "red": (1.0, 0.05, 0.05), "green": (0.1, 1.0, 0.2), "blue": (0.1, 0.35, 1.0),
-           "yellow": (1.0, 0.85, 0.05), "purple": (0.65, 0.1, 1.0), "cyan": (0.05, 0.95, 1.0)}
 _EYE_GROUP = 1  # the eye LEDs sit in front of the head camera: hidden in its view
 
 
 def add_leds(spec):
-    """MjSpec hook: chest (button) and eye (camera) LED discs, visual only (no mass, no contacts)."""
+    """MjSpec hook: chest (button) and eye (camera) LED discs, visual only (no mass, no contacts). Each disc has
+    its own material so SimRobot.paint_leds can set colour and glow at run time (robot.paint_led_model); the
+    viewer window and the offscreen cameras then show identical LEDs."""
     import mujoco
     disc = [0.7071068, 0.7071068, 0.0, 0.0]  # cylinder axis along y: the disc faces forward
 
     def led(body, name, pos, radius, group):
+        mat = spec.add_material()
+        mat.name, mat.rgba, mat.emission = name + "_mat", [0.15, 0.15, 0.15, 1.0], 0.0
         g = body.add_geom()
         g.name, g.type, g.pos, g.quat = name, mujoco.mjtGeom.mjGEOM_CYLINDER, pos, disc
         g.size = [radius, 0.0012, 0.0]
-        g.rgba = [0.15, 0.15, 0.15, 1.0]
+        g.rgba, g.material = [0.15, 0.15, 0.15, 1.0], mat.name
         g.contype = g.conaffinity = 0
         g.group, g.mass = group, 0.0
 
@@ -49,16 +50,6 @@ def add_leds(spec):
     led(base, "led_chest", [0.0, 0.0586, 0.2913], 0.009, 2)  # the chest button ring
     for name, x in (("led_eye_left", -0.0092), ("led_eye_right", 0.0098)):
         led(head, name, [x, 0.0252, 0.0403], 0.0045, _EYE_GROUP)
-
-
-def led_rgba(state, t):
-    """(r, g, b, a) and emission for one LED {"color", "mode"} at time t (on / off / blink 1 Hz / breath 3 s)."""
-    r, g, b = LED_RGB.get(state.get("color"), LED_RGB["white"])
-    mode = state.get("mode", "on")
-    level = {"off": 0.0, "blink": 1.0 if (t % 1.0) < 0.5 else 0.0,
-             "breath": 0.5 - 0.5 * math.cos(2 * math.pi * t / 3.0)}.get(mode, 1.0)
-    dark = 0.12
-    return (dark + (r - dark) * level, dark + (g - dark) * level, dark + (b - dark) * level, 1.0), 0.8 * level
 
 
 # -- camera renderer -------------------------------------------------------------
@@ -185,16 +176,6 @@ class SimRenderer:
         cams["head_camera"] = c
         return cams
 
-    def _led_geoms(self):
-        m, out = self.sim.model, {}
-        for kind, names in LED_GEOMS.items():
-            for n in names:
-                try:
-                    out[m.geom(n).id] = kind
-                except KeyError:
-                    pass
-        return out
-
     def _run(self):
         mj = self._mj
         try:
@@ -209,7 +190,7 @@ class SimRenderer:
                 self._cond.notify_all()
             return
         try:
-            data, cams, leds = mj.MjData(m), self._cameras(), self._led_geoms()
+            data, cams = mj.MjData(m), self._cameras()
             opt_head, opt = mj.MjvOption(), mj.MjvOption()
             opt_head.geomgroup[_EYE_GROUP] = 0
             t0, n = time.monotonic(), 0
@@ -221,13 +202,11 @@ class SimRenderer:
                         self._cond.wait(0.2)
                         continue
                 with self.sim._lock:
-                    mj.mj_copyData(data, m, self.sim.data)
-                led_state = {k: dict(v) for k, v in self.sim.led.items()}
+                    mj.mj_copyData(data, m, self.sim.data)  # the LED colours live in the shared model (paint_leds)
                 cams["free"].azimuth = -60.0 + 18.0 * (tick - t0)  # one turn every 20 s
                 n += 1
                 for cam in wanted:
                     renderer.update_scene(data, cams[cam], opt_head if cam == "head_camera" else opt)
-                    self._paint_leds(renderer.scene, leds, led_state, tick)
                     rgb = renderer.render().copy()
                     jpeg = encode_jpeg(rgb, self.quality)
                     with self._cond:
@@ -243,17 +222,6 @@ class SimRenderer:
                 renderer.close()
             except Exception:
                 pass
-
-    def _paint_leds(self, scene, leds, led_state, t):
-        if not leds:
-            return
-        geom_type = self._mj.mjtObj.mjOBJ_GEOM
-        for i in range(scene.ngeom):
-            g = scene.geoms[i]
-            if g.objtype == geom_type and g.objid in leds:
-                rgba, emission = led_rgba(led_state.get(leds[g.objid], {}), t)
-                g.rgba[:] = rgba
-                g.emission = emission
 
 
 # -- sim built-ins ---------------------------------------------------------------
@@ -313,17 +281,41 @@ class SimGait:
     SIDE = 1.0  # deg of hip/ankle roll per unit of speed_h
     BACK = 0.5  # backward strides are this fraction of forward ones (less stable)
     DIAG = 0.5  # side amplitude is scaled by this while also walking forward or backward
-    CYCLE = 0.7  # s per two steps at period 0; a cycle lasts CYCLE + CYCLE_PER_PERIOD * period
+    CYCLE = 0.75  # s per two steps at period 0; a cycle lasts CYCLE + CYCLE_PER_PERIOD * period (0.7 drifted
+    # the heading by up to 60 deg in backward-right walks; 0.75 cut the mean drift from 15 to 6 deg)
     CYCLE_PER_PERIOD = 0.05
-    K_PITCH = 0.3  # ankle pitch deg per deg of torso lean about x (+ = leaning back)
+    K_PITCH = 0.6  # ankle pitch deg per deg of torso lean about x (+ = leaning back); 0.3 let 0.3 N.s pushes tip it
     K_ROLL = 0.0  # ankle roll deg per deg of torso lean about y (+ = leaning right)
-    D_PITCH = 0.03  # ankle pitch deg per deg/s of lean rate about x
+    D_PITCH = 0.06  # ankle pitch deg per deg/s of lean rate about x (with K_PITCH 0.6: 0/384 push falls, was 24)
     D_ROLL = 0.06  # ankle roll deg per deg/s of lean rate about y
     MAX_DEG_S = 300.0  # servo slew limit on the targets (the servo family is rated about 0.2 s per 60 deg)
-    STOP_S = 1.0  # s over which the stride and sway fade out when the walk stops (0.4 s tips the robot at full speed)
+    STOP_S = 1.5  # s over which the stride fades out when the walk stops (0.4 s tipped it at full speed, 1.0 s at
+    # some stop phases of fast walks; 2.0 s is worse: the shrinking steps stop clearing the floor). The stepping
+    # itself (sway, lift) stays at full amplitude until the stride is half gone, and the ankle balance keeps its
+    # full gain through the fade: the feet keep moving under the torso while its momentum is absorbed.
+    TURN_DEG = 4.0  # deg of opposite fore/aft stride on the two legs while turning in place (see run())
+    TURN_LIFT = 4.0  # deg of extra foot lift while turning: a foot that clears the floor pivots instead of dragging
+    # (sweep: 4 deg stride + 4 deg lift turns 10-11 deg/s both ways at 9 deg tilt; 3 deg + no lift gave 3 deg/s)
+    RAMP_S = 2.0  # s for a stride, side step or turn to go from zero to full: direction changes never jump
+    # (1.5 s still tipped the robot in 2 of 3 full-speed diagonal-then-reverse chains with the GUI's renderer running)
+    # Momentum: SimRobot.balance() gives the capture point (where the robot would have to step to come to rest).
+    # In a steady walk it stays within about 3 cm outside the support circle (measured, speed 5). Beyond
+    # BRAKE_M the commanded stride is wound down (over BRAKE_IN_S, released over BRAKE_OUT_S), and the swing
+    # foot is placed towards the capture point (K_CP deg per m of excess offset, capped), the stepping reflex
+    # that catches a push or a too-fast direction change before the torso tips.
+    BRAKE_M = 0.035
+    BRAKE_IN_S = 0.3
+    BRAKE_OUT_S = 0.8
+    CP_NORMAL_M = 0.05  # capture-point offset from the support centre that walking itself produces
+    K_CP = 150.0  # deg of extra swing-foot stride per m of capture-point offset beyond CP_NORMAL_M
+    K_CP_SIDE = 60.0  # deg of extra swing-foot side placement per m of sideways excess (small: the legs must not cross)
+    CP_STEP_MAX = 12.0  # deg: cap on the extra swing stride
+    CP_SIDE_MAX = 4.0  # deg: cap on the extra side placement
     DT = 0.02
     TUNABLE = ("crouch", "sway", "lift", "stride", "side", "back", "diag", "cycle", "cycle_per_period",
-               "k_pitch", "k_roll", "d_pitch", "d_roll", "max_deg_s", "stop_s")
+               "k_pitch", "k_roll", "d_pitch", "d_roll", "max_deg_s", "stop_s", "turn_deg", "ramp_s", "brake_m",
+               "brake_in_s", "brake_out_s", "cp_normal_m", "k_cp", "k_cp_side", "cp_step_max", "cp_side_max",
+               "turn_lift")
 
     def __init__(self, sim, max_tilt_deg=25.0, **tuning):
         self.sim, self.max_tilt = sim, max_tilt_deg
@@ -333,6 +325,11 @@ class SimGait:
             setattr(self, k.upper(), float(v))
         self.steps_done = 0
         self.status = "idle"
+        self.balance = None  # last SimRobot.balance() while walking
+        self.braking = 0.0  # 0..1: how much of the commanded stride the momentum brake is taking away right now
+        self.reflex = (0.0, 0.0)  # (deg forward, deg sideways) the swing foot is currently placed off its path
+        self._fading = False  # the walk is stopping (or idling): pose() fades the stride before the stepping
+        self._landed = {"Left": [0.0, 0.0], "Right": [0.0, 0.0]}  # where each foot landed off its path (fades in stance)
 
     @classmethod
     def cycle_time(cls, period):
@@ -342,8 +339,19 @@ class SimGait:
     def _cycle(self, period):
         return self.CYCLE + self.CYCLE_PER_PERIOD * min(max(period, 1), 5)
 
-    def pose(self, phi, stride=0.0, side=0.0, amp=1.0, wave=False, crouch=None):
-        """Leg (and arm) servo angles at cycle phase phi (0..1): left leg swings in [0, 0.5), right in [0.5, 1)."""
+    def pose(self, phi, stride=0.0, side=0.0, amp=1.0, wave=False, crouch=None, turn=0.0, reflex=(0.0, 0.0)):
+        """Leg (and arm) servo angles at cycle phase phi (0..1): left leg swings in [0, 0.5), right in [0.5, 1).
+        turn (deg) is added to the right leg's stride and taken from the left one's: the robot has no hip yaw,
+        so it pivots on friction and turns anticlockwise for turn > 0 (measured in the sim; slow, about 3 deg/s).
+        reflex = (deg forward, deg to the left) is added to where the swinging foot lands (the capture-point
+        step); the offset is remembered per foot and fades out while that foot is on the ground.
+        While the walk fades out (self._fading, 0 < amp < 1) the stride, side step, turn and reflex shrink with amp
+        but the stepping (sway, lift) stays at full amplitude until the stride is half gone, then fades: both feet
+        landing flat while the torso still moves is what used to pitch it over at the end of a stop."""
+        if 0.0 < amp < 1.0 and self._fading:
+            amp_w = min(1.0, 2.0 * amp)
+            k = amp / amp_w
+            stride, side, turn, reflex, amp = stride * k, side * k, turn * k, (reflex[0] * k, reflex[1] * k), amp_w
         crouch = self.CROUCH if crouch is None else crouch
         r = self.SWAY * amp * math.sin(2 * math.pi * phi)  # > 0: weight on the right foot
 
@@ -353,12 +361,18 @@ class SimGait:
         out = {}
         for leg, offset in (("Left", 0.0), ("Right", 0.5)):
             u = (phi - offset) % 1.0
-            if u < 0.5:  # swing: lift and move from back to front
+            landed = self._landed[leg]
+            if u < 0.5:  # swing: lift and move from back to front, landing off its path by the reflex
                 v = shaped(u / 0.5)
-                lift, s = self.LIFT * amp * math.sin(math.pi * v), 0.5 - 0.5 * math.cos(math.pi * v)
-            else:  # stance: the foot slides back under the body
+                lift_amp = self.LIFT + self.TURN_LIFT * min(abs(turn) / self.TURN_DEG, 1.0)  # higher steps while turning
+                lift, s = lift_amp * amp * math.sin(math.pi * v), 0.5 - 0.5 * math.cos(math.pi * v)
+                landed[0], landed[1] = reflex[0] * s, reflex[1] * s
+                extra_f, extra_l = landed
+            else:  # stance: the foot slides back under the body; the landing offset fades out
                 lift, s = 0.0, 1.0 - (u - 0.5) / 0.5
-            fwd, lat = stride * amp * (2 * s - 1), side * amp * (2 * s - 1)
+                extra_f, extra_l = landed[0] * s, landed[1] * s
+            leg_stride = stride + (turn if leg == "Right" else -turn)
+            fwd, lat = leg_stride * amp * (2 * s - 1) + extra_f * amp, side * amp * (2 * s - 1) + extra_l * amp
             hip, knee = crouch + lift + fwd, 2 * crouch + 2 * lift
             ankle = knee - hip  # keeps the foot parallel to the torso
             if leg == "Right":
@@ -373,13 +387,17 @@ class SimGait:
         return out
 
     @staticmethod
-    def describe(speed_v, speed_h):
+    def describe(speed_v, speed_h, turn=0):
         parts = []
         if speed_v:
             parts.append("forward" if speed_v > 0 else "backward")
         if speed_h:
             parts.append("left" if speed_h > 0 else "right")
-        return "walking " + " and ".join(parts) if parts else "stepping in place"
+        text = "walking " + " and ".join(parts) if parts else ""
+        if turn:
+            spin = "turning " + ("anticlockwise" if turn > 0 else "clockwise")
+            text = f"{text}, {spin}" if text else spin
+        return text or "stepping in place"
 
     def _lean(self):
         """(lean about x, lean about y, rates) of the torso in deg and deg/s, model frame (SimRobot.torso_lean)."""
@@ -415,12 +433,18 @@ class SimGait:
         (speed_v, speed_h, period, wave). Returns a status text."""
         sim, dt = self.sim, self.DT
         self.steps_done, self.status = 0, "walking"
-        sim.set_servos_angles(self._slew(self.pose(0.0, amp=0.0), None, dt), 600)
-        sim.wait(0.7)
+        quick = bool(params.get("quick"))  # a balance reflex: no time to settle into the crouch first
+        sim.set_servos_angles(self._slew(self.pose(0.0, amp=0.0), None, dt), 250 if quick else 600)
+        sim.wait(0.25 if quick else 0.7)
         ref = self._lean()[:2]
         last = None
         phi, amp, t_prev = 0.0, 0.0, sim.data.time
+        eff = {"stride": 0.0, "side": 0.0, "turn": 0.0}  # ramped towards the commanded values (RAMP_S)
+        rate = {"stride": 5 * self.STRIDE / self.RAMP_S, "side": 5 * self.SIDE / self.RAMP_S,
+                "turn": self.TURN_DEG / self.RAMP_S}
         stopping, status = False, "done"
+        peak = 0.0  # the balance keeps the gain it reached: it must not fade with the stride during a stop
+        self._fading = False
         while True:
             p = dict(params)
             steps = int(p.get("steps") or 0)
@@ -432,14 +456,39 @@ class SimGait:
                 status = f"stopped: torso tilted over {self.max_tilt:g} deg"
                 break
             T = self._cycle(p.get("period", 1))
+            t = sim.data.time
+            step = min(max(t - t_prev, 0.0), 4 * dt)  # sim time since the last tick: in real time a tick may be late
+            t_prev = t
             v = min(max(p.get("speed_v", 0), -5), 5)
             h = min(max(p.get("speed_h", 0), -5), 5)
-            stride = self.STRIDE * (v if v >= 0 else v * self.BACK)
-            side = self.SIDE * h * (self.DIAG if v else 1.0)
-            t = sim.data.time
-            dphi = max(0.0, t - t_prev) / T
-            t_prev = t
-            amp = max(0.0, amp - dt / self.STOP_S) if stopping else min(1.0, amp + dt / (T / 2))
+            tn = p.get("turn", 0) or 0
+            idle = not steps and not (v or h or tn)  # hold-to-walk with nothing held: stand in the crouch, do not step
+            self._fading = stopping or idle
+            want = {"stride": self.STRIDE * (v if v >= 0 else v * self.BACK),
+                    "side": self.SIDE * h * (self.DIAG if v else 1.0),
+                    "turn": self.TURN_DEG * (1 if tn > 0 else -1 if tn < 0 else 0)}  # the turn rate saturates
+            for k, target in want.items():  # a new direction is reached gradually, so momentum stays small
+                eff[k] += min(max(target - eff[k], -rate[k] * step), rate[k] * step)
+            stride, side, turn = eff["stride"], eff["side"], eff["turn"]
+            try:
+                self.balance = sim.balance()
+            except Exception:  # noqa: BLE001 - a model without soles or an odd state must not stop the walk
+                self.balance = None
+            if self.balance is not None:
+                ox, oy = self.balance["offset_m"]  # capture point relative to the support centre (x right, y forward)
+                over = self.balance["margin_m"] > self.BRAKE_M
+                self.braking = min(self.braking + step / self.BRAKE_IN_S, 1.0) if over else \
+                    max(self.braking - step / self.BRAKE_OUT_S, 0.0)
+                exc_y = math.copysign(max(abs(oy) - self.CP_NORMAL_M, 0.0), oy)
+                exc_x = math.copysign(max(abs(ox) - self.CP_NORMAL_M, 0.0), ox)
+                self.reflex = (max(-self.CP_STEP_MAX, min(self.CP_STEP_MAX, self.K_CP * exc_y)),
+                               max(-self.CP_SIDE_MAX, min(self.CP_SIDE_MAX, -self.K_CP_SIDE * exc_x)))
+            if self.braking:  # momentum the feet cannot absorb: stop pushing, gradually
+                stride *= 1.0 - self.braking
+                side *= 1.0 - self.braking
+            dphi = step / T
+            amp = max(0.0, amp - step / self.STOP_S) if (stopping or idle) else min(1.0, amp + step / (T / 2))
+            peak = max(peak, amp)
             if stopping and amp <= 0.0:
                 break
             old, phi = phi, (phi + dphi) % 1.0
@@ -447,13 +496,23 @@ class SimGait:
                 self.steps_done += 1
                 if on_step:
                     on_step(self.steps_done)
-            target = self.pose(phi + dt / T, stride, side, amp, bool(p.get("wave")))
-            self._balance(target, ref, amp)
-            last = self._slew(target, last, dt)
+            target = self.pose(phi + dt / T, stride, side, amp, bool(p.get("wave")), turn=turn, reflex=self.reflex)
+            self._balance(target, ref, peak)
+            last = self._slew(target, last, max(step, dt))
             self._send(last, dt * 1000)
             sim.wait(dt)
-        sim.set_servos_angles({n: RESET_POSE[n] for n in self.pose(0.0, wave=True)}, 600)
-        sim.wait(0.6)
+        tilted = f"stopped: torso tilted over {self.max_tilt:g} deg"
+        if sim.torso_tilt_deg() > self.max_tilt:
+            status = tilted  # no point standing up a robot that is going over
+        else:
+            sim.set_servos_angles({n: RESET_POSE[n] for n in self.pose(0.0, wave=True)}, 600)
+            t_end = sim.data.time + 1.0  # the stand-up and a settle: a fall here used to be reported as a clean stop
+            while sim.data.time < t_end:
+                sim.wait(dt)
+                if sim.torso_tilt_deg() > self.max_tilt:
+                    status = tilted + " while standing up"
+                    break
+        self._fading = False
         self.status = status
         return status
 
@@ -520,5 +579,6 @@ def detect_colours(rgb, min_fraction=0.02):
     return {"color": sorted(out, key=lambda c: -c["fraction"])}
 
 
-__all__ = ["SimRenderer", "SimGait", "SimBattery", "add_leds", "led_rgba", "detect_colours", "encode_jpeg",
+__all__ = ["SimRenderer", "SimGait", "SimBattery", "add_leds", "led_rgba", "paint_led_model", "LED_GEOMS", "LED_RGB",
+           "detect_colours", "encode_jpeg",
            "load_builtin", "builtin_path", "has_builtin", "camera_name", "CAMERAS", "SIM_BUILTINS", "BUILTIN_DIR"]

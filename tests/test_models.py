@@ -257,6 +257,86 @@ def test_sim_gait_stops_without_falling():
         assert gait.status == "stopped" and tilt[0] < 15, (stop_at, gait.status, tilt[0])
 
 
+def test_sim_balance_and_ramped_gait():
+    """balance(): the capture point sits inside the support circle when standing and leaves it under a push; the
+    gait ramps a reversal at full speed so the robot stays up (an instant change threw it over)."""
+    import threading
+    import time
+    from yanshee_sim.sim_extras import SimGait
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.wait(1.0)
+    b = bot.balance()
+    assert b["margin_m"] < -0.03 and abs(b["com_m"][2] - 0.2) < 0.05 and len(b["capture_point_m"]) == 2
+    head = bot.model.body("NeckLR").id
+    with bot._lock:
+        bot.data.xfrc_applied[head] = [0, 12.0, 0, 0, 0, 0]
+    bot.wait(0.3)
+    with bot._lock:
+        bot.data.xfrc_applied[head] = 0
+    assert bot.balance()["margin_m"] > 0.02  # momentum the feet cannot absorb
+    bot.close()
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.wait(0.5)
+    gait, stop, params = SimGait(bot, max_tilt_deg=20), threading.Event(), {"speed_v": 5, "speed_h": 0, "steps": 0}
+    th = threading.Thread(target=lambda: gait.run(params, stop))
+    th.start()
+    t0 = bot.data.time
+    while bot.data.time < t0 + 2.0 and th.is_alive():
+        time.sleep(0.002)
+    params.update(speed_v=-5, speed_h=0)  # full reversal mid-walk
+    while bot.data.time < t0 + 4.5 and th.is_alive():
+        time.sleep(0.002)
+    stop.set()
+    th.join(30)
+    bot.wait(1.0)
+    tilt = bot.torso_tilt_deg()
+    bot.close()
+    assert gait.status == "stopped" and tilt < 15, (gait.status, tilt)
+
+
+def test_sim_gait_turns_in_place():
+    """turn > 0 pivots anticlockwise, turn < 0 clockwise (slowly: the robot has no hip yaw), without falling."""
+    import threading
+    from yanshee_sim.sim_extras import SimGait
+    assert SimGait.describe(0, 0, 3) == "turning anticlockwise" and SimGait.describe(2, 0, -1) == "walking forward, turning clockwise"
+    for turn in (3, -3):
+        bot = SimRobot(viewer=False, realtime=False)
+        bot.wait(0.5)
+        gait = SimGait(bot)
+        status = gait.run({"speed_v": 0, "speed_h": 0, "period": 1, "steps": 20, "turn": turn}, threading.Event())
+        w, x, y, z = bot.data.qpos[3:7]
+        yaw = math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+        moved = math.hypot(*bot.data.qpos[:2])
+        tilt = bot.torso_tilt_deg()
+        bot.close()
+        assert status == "done" and tilt < 15, (turn, status, tilt)
+        assert yaw * turn > 8 and moved < 0.12, (turn, yaw, moved)  # turned the right way, stayed roughly in place
+
+
+def test_sim_leds_paint_the_model():
+    """LED settings are painted into the shared model (geom colour + material glow), so the viewer window and the
+    offscreen cameras show the same LEDs; blink animates with sim time and set_led repaints at once."""
+    from yanshee_sim import sim_extras
+    from yanshee_sim.robot import led_rgba
+    bot = SimRobot(viewer=False, realtime=False, spec_hook=sim_extras.add_leds)
+    m = bot.model
+    chest, eye = m.geom("led_chest").id, m.geom("led_eye_left").id
+    assert m.geom_matid[chest] >= 0 and m.geom_matid[eye] >= 0
+    assert bot.set_led("button", "red", "blink")["code"] == 0
+    assert np.allclose(m.geom_rgba[chest][:3], (1.0, 0.05, 0.05), atol=1e-3)  # repainted immediately, blink phase on
+    levels = set()
+    for _ in range(50):
+        bot.wait(0.03)
+        levels.add(round(float(m.geom_rgba[chest][0]), 2))
+    assert levels == {0.12, 1.0}, levels
+    rgba, emission = led_rgba(bot.led["camera"], bot.data.time)
+    assert np.allclose(m.geom_rgba[eye], rgba, atol=1e-3) and abs(m.mat_emission[m.geom_matid[eye]] - emission) < 1e-6
+    assert bot.set_led("camera", "blue", "off")["code"] == 0
+    assert np.allclose(m.geom_rgba[eye][:3], (0.12, 0.12, 0.12), atol=1e-3) and m.mat_emission[m.geom_matid[eye]] == 0
+    assert SimRobot(viewer=False, realtime=False).paint_leds() is None  # no LEDs without the hook: a no-op
+    bot.close()
+
+
 def test_sim_imu_fields():
     keys = {"id", "gyro-x", "gyro-y", "gyro-z", "accel-x", "accel-y", "accel-z",
             "compass-x", "compass-y", "compass-z", "euler-x", "euler-y", "euler-z"}

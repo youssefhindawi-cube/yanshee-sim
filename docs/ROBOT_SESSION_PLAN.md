@@ -8,7 +8,9 @@ breaks.
 ## 0. Before touching the robot
 
 - Charge it above 50 % (motions are refused under 30 %).
-- Laptop and robot on the same Wi-Fi. The app shows the robot's IP; or scan from the laptop:
+- Laptop and robot on the same 2.4 GHz Wi-Fi: the first connection goes through the Yanshee app over Bluetooth
+  (the published field card "Yanshee Wi-Fi Setup" has the steps, the IP methods and the failure table; bring your
+  own router or hotspot, keep it offline during the show). The app shows the robot's IP; or scan from the laptop:
   `python3 -c "import socket;[print(f'172.20.10.{i}') for i in range(1,15) if socket.socket().connect_ex((f'172.20.10.{i}',9090))==0]"`
   (replace the prefix with your network's).
 - `python3 tools/robot_checks.py latency --ip IP` — confirms REST works and tells how slow it is (ms per
@@ -91,6 +93,30 @@ decelerates on `exit_motion_gait`, so the software stops the robot the gentle wa
   `stage_s` and re-test.
 - When the gait is recorded with `record_real_motion.py`, record the stop too: the sim's `STOP_S` should
   match how long the real robot takes to settle.
+
+### 5c. Turning
+
+The robot's gait cannot turn; it turns with keyframe motions (TurnLeft/TurnRight, TurnLeftSlowly, TurnL_tiny,
+OneStepTurnLeft, "turn around"), which UBTECH's own files show to be a stance-foot pivot with the rear leg swept and
+the sole rolled onto its edge. Play each one N times from a floor mark, read the IMU's euler-z before and after,
+log `total_time`, and note the floor. That gives degrees per run and per second (expect roughly 5–9 °/s); the
+sim's pivot does 10–11 °/s (`SimGait.TURN_DEG`, `TURN_LIFT`), so match it to the real figure and pick the motion
+the Rotate buttons should map to.
+
+### 5d. Arms while walking (layers)
+
+Today a gesture during a walk cancels the walk (one activity at a time); only the gait's own arm-swing flag works
+mid-walk. The firmware's "layers" engine (v2 motions with head/hand/foot tracks, firmware ≥ 2.4;
+`set_servos_angles_layers`) is the intended way to combine them, but what happens on conflicts is undocumented.
+Measure, with the gait running at speed 3: a plain `set_servos_angles` on two arm servos (per-servo true/false,
+readback 0.5 s later, gait state); the same with `set_servos_angles_layers`; a `H_*` motion with `version="v2"`
+and `GET /v1/motions/all`; a head move during a v1 "wave"; two v2 motions at once and `stop_play_motion("",
+version="v2")`; and, with the robot held, one leg servo command during the gait. The results decide the controller's
+servo-group lanes (design in docs/ARCHITECTURE.md).
+
+The full checkpoint protocol, including every sensor and peripheral (camera, microphone, speaker, LEDs, buttons,
+add-on sensors, Bluetooth gamepad, HDMI/USB, energy saving, OTA) and the endurance session, is the published page
+"Yanshee Hardware Test Plan".
 
 ## 6. Motions both ways
 

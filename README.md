@@ -134,7 +134,7 @@ Reset, Pause/Resume of a playing built-in, and these tabs:
 
 | Tab | Contents |
 |---|---|
-| **Motion control** | Walk with the D-pad or arrow keys/WASD (hold to walk, release to stop; speed 1–5, side steps, arm swing), turn left/right; the robot's built-in actions grouped by category (gestures, locomotion, fight, football, get-up, dances with music, v2 layered, your motion files) with direction, speed and repeat. |
+| **Motion control** | Walk with the D-pad or the keys (hold to walk, release to stop; speed 1–5, side steps, arm swing); under the D-pad, **Rotate** ↺/↻ (hold, or <kbd>Q</kbd>/<kbd>E</kbd>: the simulator pivots slowly, the robot plays its own turn-around motion per press) and **Get up** (after a fall: the robot's GetupFront/GetupRear chosen by its IMU, the simulator's own get-up motion, or it is stood up when that fails), plus two simulator-only **Tip over** buttons that push the robot over gently (front/back) so the fall detection and Get up can be tried; the robot's built-in actions grouped by category (gestures, locomotion, fight, football, get-up, dances with music, v2 layered, your motion files) with direction, speed and repeat. |
 | **Servos & recorder** | 17 sliders by body part with live readback; limp/work per limb group (robot); capture keyframes with runtime and hold, edit and reorder them, preview in sim, play on the target, check report, save/load/delete motion files (JSON and `.hts`). |
 | **Settings & sensors** | Volume, chest/eye LEDs, language, fall management, versions, the IMU numbers with a rolling chart (euler/gyro), add-on sensors, sim battery. |
 | **Voice & vision** | TTS (the robot speaks; in sim the browser does), vision tasks with result cards (only colour detection works in sim), face entry, photo with resolution. |
@@ -142,6 +142,11 @@ Reset, Pause/Resume of a playing built-in, and these tabs:
 
 **Live view** (always visible): an MJPEG stream of the simulator from four cameras — *front*, *side*, *free* and
 *head* (the robot's own point of view) — and the robot's real head camera in Robot/Both mode, plus LED indicators.
+
+**Keys, from any tab** (not while typing in a field): arrows or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk,
+<kbd>Q</kbd>/<kbd>E</kbd> rotate, <kbd>Esc</kbd> is STOP. The same keys work in the MuJoCo window when the server runs
+with `--viewer` (<kbd>X</kbd> or <kbd>Esc</kbd> there is STOP; the window must have the focus; a held key keeps the
+walk alive, releasing it stops the walk within a second).
 
 **Safety in Robot and Both mode.** Every command passes the gate: servo limits, self-collision check, a 90 °/s speed
 cap (motion-file frames included), a 30 % battery floor, confirmation before limping leg servos. Walking has a
@@ -156,9 +161,11 @@ The server owns **one** simulation. Two ways to watch it:
 1. **In the page itself** — the live view streams the simulator's cameras; pick *front*, *side*, *free* or *head*
    above the video. This works from any device, tablets included.
 2. **In the MuJoCo window** — start the server with `--viewer`. The 3D window opens on the machine running the
-   server and shows the same physics the page controls: drive from the tablet, watch (rotate, zoom, press `3` for
-   collision shapes) on the laptop. Don't drag the viewer's Control sliders in this mode: the page owns the servo
-   targets. Add `--fixed` to hold the torso in the air while you work on the arms.
+   server and shows the same physics the page controls, with the same chest and eye LEDs (colour, blink and
+   breathing are painted into the shared model, so the window and the page's cameras never differ): drive from
+   the tablet or with the keys in the window itself, watch (rotate, zoom, press `3` for collision shapes) on the
+   laptop. Don't drag the viewer's Control sliders in this mode: the page owns the servo targets. Add `--fixed`
+   to hold the torso in the air while you work on the arms.
 
 `scripts/view.py` is a *separate* simulation and does not follow the page. With a robot connected, the *head*
 camera shows the robot's real camera in **Robot** mode (the stream URL `/api/stream/head.mjpg?source=robot|sim` forces
@@ -185,7 +192,7 @@ python3 scripts/view.py --fixed    # torso held 10 cm in the air: move joints wi
 
 In the viewer: **Control** panel → drag a servo (radians; degrees = rad × 57.3); Ctrl + right-drag pushes the robot;
 Backspace resets to the standing pose; `3` shows collision shapes (the flat box soles under the feet), `2` toggles
-the visual meshes.
+the visual meshes. The chest and eye LEDs are shown in their default state (blue breathing, green eyes).
 
 ### `scripts/play_motion.py` — check a motion file and play it
 
@@ -383,7 +390,8 @@ from yanshee_sim import connect, SimRobot, RealRobot, motion, mirror, NAMES, LIM
 | `get_target_angles()` | Current servo targets (the slider positions in manual mode). |
 | `jump_to(angles)` | Teleport joints and targets to a pose. |
 | `respawn()` | Stand a fallen robot up (back to the reset keyframe). |
-| `set_led(type, color, mode)` / `get_led()` / `led` | Chest `button` and eye `camera` LEDs (the GUI renders them). |
+| `set_led(type, color, mode)` / `get_led()` / `led` | Chest `button` and eye `camera` LEDs, painted into the model (`paint_leds()`), so the viewer window and the GUI's cameras show them alike. Needs the model built with `spec_hook=sim_extras.add_leds`. |
+| `on_key` / `key_callback=` | A function called with the GLFW key code for key presses (and repeats) in the viewer window; the controller maps WASD/arrows, Q/E and X/Esc to walking, turning and STOP. |
 | `is_running()` | False once the viewer window is closed. |
 | `model`, `data`, `strict` | Raw MuJoCo objects; `strict = False` clamps out-of-range angles instead of raising. |
 
@@ -405,6 +413,12 @@ with Controller() as ctl:                                   # mode "sim"
     ctl.set_servos({"NeckLR": 60}, runtime=800)             # through the safety gate
     ctl.stop_all()                                          # STOP: everything, at once
 ```
+
+Also `get_up()`: after a fall, the robot's GetupFront/GetupRear chosen from its IMU (euler-x about 0 face down,
+about 180 on the back); in the simulator the motion `motions/builtin/getup_front.json` / `getup_rear.json` when one
+exists (`tools/tune_getup.py` searches for one by trial in the physics), else the robot is stood up by `respawn()`
+and an event says so. `state()["sim"]["balance_margin_cm"]` is the capture-point margin (negative = inside the
+support circle). `reflex_enabled` (default off) makes an idle, pushed robot take a quick step.
 
 Every method returns `{"ok": ...}` and never raises on robot errors (only `set_mode` raises `ModeError`). Method list,
 relay modes and safety rules: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 2.
@@ -434,9 +448,24 @@ pair except the ankle roll servos, which keep their value).
 
 ### `yanshee_sim.sim_extras.SimGait`
 
-The simulator's walk (`speed_v`/`speed_h` −5..5, `period` 1..5, `steps`, `wave`): a stepping pattern with ankle
-balance on `torso_lean()`, slew-limited to `MAX_DEG_S`, fading out over `STOP_S` on stop. Tuning constants are class
-attributes; override per instance: `SimGait(sim, sway=10, cycle=0.8).run(params, stop_event)`.
+The simulator's walk (`speed_v`/`speed_h` −5..5, `period` 1..5, `steps`, `wave`, `turn` −5..5): a stepping pattern
+with ankle balance on `torso_lean()`, slew-limited to `MAX_DEG_S`. A stop fades the stride out over `STOP_S`
+(1.5 s) in two stages: the stepping itself keeps its full sway and foot lift until the stride is half gone, and the
+ankle balance keeps its full gain through the fade, so the feet keep moving under the torso while its momentum is
+absorbed (both feet landing flat under a moving torso was the one cause behind every fall a 6,000-run headless sweep
+found; a fall during the final stand-up is now reported as `stopped: ... while standing up`). Every change of
+direction is ramped over `RAMP_S` (2 s). Validated after the changes: 0 falls in 192 stop phases across all
+directions and turning, 0 in 32 head pushes of 0.3–0.4 N·s during stepping and walking (24 fell before), 0 in 40
+real-time chains through the controller with the renderer running at speeds 3 and 5. Momentum is watched through `SimRobot.balance()` (the
+capture point, CoM + velocity·√(h/g), against the support circle): beyond `BRAKE_M` the stride is wound down, and
+the swing foot is placed towards the capture point (`K_CP`, the stepping reflex). In tests the ramp is what prevents
+the falls; the reflex is neutral against hand-sized shoves at the head (≥ 0.5 N·s topples the robot either way),
+so expect no miracles from it. `turn` pivots in place (+ anticlockwise) by giving the two legs opposite strides
+(`TURN_DEG` 4°) with extra foot lift while turning (`TURN_LIFT` 4°, so the feet pivot instead of dragging): the
+robot has no hip-yaw joint, so this is a friction pivot, about 10 °/s in both directions whatever the setting (a
+quarter turn in 9 s). Tuning constants are class attributes; override per instance:
+`SimGait(sim, sway=10, cycle=0.8).run(params, stop_event)`.
+`Controller.gait(..., turn=)` exposes it (simulator only: the robot turns with its built-in "turn around" motion).
 
 ### Example
 
@@ -606,6 +635,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 - **The walk:** `SimGait` is a stepping pattern with balance from the torso lean (rate damping and a pitch gain), tuned by `tools/tune_gait.py`: about 19 cm/s at `speed_v 5` with servo targets limited to 300 °/s, upright backward, sideways, diagonally and at every `period` (`tools/gait_tuning.json`). It is not UBTECH's gait (closed source; the only published figure is a vendor's "10 cm/s", the course's example gait uses a 0.8 s sway period), so match `CYCLE`/`STRIDE` to the robot once measured. Stops fade the stride out over `STOP_S` = 1 s: a 0.4 s fade tipped the robot over at full speed, and on the robot the speeds are stepped down `5 → 3 → 1` before `exit_motion_gait`.
 - **IMU:** `get_sensors_gyro()` emulates what the documents say the robot reports: accel in g (right/front/down axes), gyro in deg/s and compass on left/back/up axes, euler in degrees with euler-x ≈ 0 face down, ≈ ±180 on the back and ≈ 90 upright (UBTECH's self-balancing sample uses 91.95 and a backward lean raises it), ~19 Hz sample-and-hold, noise and gyro bias from a published Allan-variance fit. The euler-y sign, the raw axis signs and the compass units are assumptions (`IMU_*` in `robot.py`).
 - **Not simulated:** vision (except colour detection from the rendered head camera), voice, the built-in dances and robot-only built-ins (copy them as `.hts` or record them). The sim's LEDs, built-ins in `motions/builtin/` and the walk are approximations.
+- **Getting up:** the simulated robot cannot get up by itself yet. `tools/tune_getup.py` searched 1,600 symmetric keyframe sequences in the physics and none raised the torso past 80° (the arms are short and the servo model weak), so the Get up button stands the sim up by teleport and says so; the real robot uses its own GetupFront/GetupRear. Rerun the search once the servo constants are measured on hardware.
 
 **Open questions only the robot can answer** (`docs/ROBOT_SESSION_PLAN.md` steps 2–5)
 - Joint directions, above all the ankle pitch: UBTECH's self-balancing sample corrects a backward lean with `RightAnkleFB −`, `LeftAnkleFB +`, which in the sim leans the torso further back; UBTECH's 2018 walk keyframes agree with the sim's direction. The from-robot mirroring test settles it.
@@ -651,7 +681,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 | `yanshee_sim/` | Python package: `robot.py` (sim and real backends, emulated IMU), `rest.py` (REST client, gentle gait stop), `controller.py` (relay controller and safety gate), `sim_extras.py` (renderer, LEDs, sim built-ins, `SimGait`, sim battery), `motion.py`, `hts.py` (the robot's motion format), `mirror.py`, `servos.py`, `yanapi_sim.py` (fake YanAPI) |
 | `yanshee_sim/web/` | Web GUI: `server.py` (FastAPI) and `static/` (`index.html`, `app.js`, `style.css`) |
 | `scripts/` | `web_gui.py`, `view.py`, `play_motion.py`, `pose_editor.py`, `mirror.py`, `run_in_sim.py`, `record_real_motion.py` |
-| `tools/` | `build_models.py` (Webots JSON → MJCF + URDF + STL), `tune_gait.py` + `gait_tuning.json` (the walk's tuning), `robot_checks.py` (measurements on the real robot) |
+| `tools/` | `build_models.py` (Webots JSON → MJCF + URDF + STL), `tune_gait.py` + `gait_tuning.json` (the walk's tuning), `tune_getup.py` (searches the physics for a get-up motion), `robot_checks.py` (measurements on the real robot) |
 | `model/` | Generated MuJoCo model (`scene.xml` is the entry point) |
 | `ros2_ws/src/yanshee_description/` | ROS 2 package: URDF, meshes, launch, RViz config |
 | `motions/` | Motion files; `recorded/` for motions copied from the robot, `builtin/` the approximate sim versions of its parametric built-ins |

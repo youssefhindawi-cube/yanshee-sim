@@ -125,6 +125,7 @@ class ActionBody(_Body):
 
 class GaitBody(_Body):
     speed_v: int = Field(0, ge=-5, le=5)
+    turn: int = Field(0, ge=-5, le=5)  # + anticlockwise; simulator only (the robot turns with its built-in)
     speed_h: int = Field(0, ge=-5, le=5)
     steps: int = Field(0, ge=0, le=10000)
     period: int = Field(1, ge=0, le=5)
@@ -488,6 +489,20 @@ def create_app(controller=None, static_dir=STATIC_DIR, close_controller=None, **
     def reset():
         return _reply(ctl().reset())
 
+    class TipBody(_Body):
+        direction: Literal["front", "back", "left", "right"] = "front"
+
+    @app.post("/api/tipover")
+    def tipover(body: TipBody = Body(default=TipBody())):
+        """Simulator test: push the robot over gently so Get up can be tried. Refused in robot/both mode."""
+        return _reply(ctl().tip_over(body.direction))
+
+    @app.post("/api/getup")
+    def getup():
+        """Stand up after a fall: the robot's GetupFront/GetupRear by its IMU, or the sim's get-up motion (respawn
+        as a fallback)."""
+        return _reply(ctl().get_up())
+
     # -- servos --
     @app.get("/api/servos")
     def get_servos():
@@ -523,7 +538,7 @@ def create_app(controller=None, static_dir=STATIC_DIR, close_controller=None, **
         """steps=0 (walk until stopped) is a dead-man lease: the walk stops unless /api/gait or /api/gait/keepalive
         arrives within `lease` seconds (the GUI sends a keepalive every 0.4 s while a d-pad button is held)."""
         return _reply(ctl().gait(body.speed_v, body.speed_h, body.steps, body.period, body.wave,
-                                 lease_s=body.lease if body.steps == 0 else None))
+                                 lease_s=body.lease if body.steps == 0 else None, turn=body.turn))
 
     @app.post("/api/gait/keepalive")
     def gait_keepalive():

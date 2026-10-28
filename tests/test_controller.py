@@ -379,6 +379,103 @@ def test_unreachable_robot():
     assert c.connect("")["ok"] is False and c.state()["robot"]["connected"] is False
 
 
+def test_gait_turn_and_viewer_keys():
+    """turn= rotates the sim in place; the robot refuses it (its built-in turn-around is the way); keys from the
+    MuJoCo viewer window drive a leased walk, renew it on repeats and STOP on X/Esc."""
+    c = ctl()
+    assert c.gait(0, 0, steps=0, turn=9)["ok"] is False
+    r = c.gait(0, 0, steps=0, turn=3)
+    assert r["ok"] and wait_until(lambda: "anticlockwise" in c.state()["activity"]["detail"], 5)
+    assert c.gait(0, 0, steps=0, turn=-2)["updated"] and c._activity.params["turn"] == -2
+    assert c.gait_stop()["ok"] and wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    # viewer keys: W = forward with a 0.9 s lease; a repeat renews it; X stops
+    c._viewer_key(87)
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
+    act = c._activity
+    assert act.params["speed_v"] == Controller.VIEWER_SPEED and act.lease_s == Controller.VIEWER_LEASE_S
+    time.sleep(0.6)
+    c._viewer_key(87)  # a key repeat
+    time.sleep(0.6)
+    assert c.state()["activity"]["kind"] == "gait" and c._activity is act  # renewed, not restarted
+    c._viewer_key(81)  # Q: turn anticlockwise instead (the walk is updated in place)
+    assert wait_until(lambda: c._activity is act and act.params.get("turn") == 3 and act.params["speed_v"] == 0, 5)
+    c._viewer_key(88)  # X = STOP
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    c._viewer_key(265)  # arrow up, then let the lease run out
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 6)
+    assert c._viewer_key(9999) is None  # unknown keys are ignored
+    with Connected("robot") as (c2, srv):
+        r = c2.gait(0, 0, steps=0, turn=2)
+        assert r["ok"] is False and "turn around" in r["error"]
+        c2._viewer_key(69)  # E in robot mode plays the built-in turn-around once
+        assert wait_until(lambda: any(e[1] == "motions" and e[3].get("motion", {}).get("name") == "turn around"
+                                      for e in requests(srv, "PUT", "motions")), 5)
+
+
+def test_get_up_and_balance():
+    """get_up: the sim plays its get-up motion (if there is one) and is stood up when still down; the robot gets
+    GetupFront/GetupRear by its IMU. balance_margin_cm is in the state; the standing reflex is off by default."""
+    c = ctl()
+    assert c.reflex_enabled is False
+    st = c.state()["sim"]
+    assert st["balance_margin_cm"] is None or st["balance_margin_cm"] < 0  # standing: the capture point is inside
+    assert c.get_up() == {"ok": True, "target": "sim", "standing": True}
+    head = c.sim.model.body("NeckLR").id
+    with c.sim._lock:
+        c.sim.data.xfrc_applied[head] = [0, 12.0, 0, 0, 0, 0]  # a push at the head: it falls on its face
+    time.sleep(0.4)
+    with c.sim._lock:
+        c.sim.data.xfrc_applied[head] = 0
+    assert wait_until(lambda: c.state()["sim"]["fallen"], 6)
+    r = c.get_up()
+    assert r["ok"] and r["posture"] == "front", r
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 20)
+    assert c.sim.torso_tilt_deg() < 15
+    assert any("got up" in e["text"] or "stood up" in e["text"] for e in c.events_since(0))
+    with Connected("robot") as (c2, srv):
+        r = c2.get_up()  # the fake robot reports euler-x 89.5 (upright) -> |x| < 90 -> GetupFront
+        assert r["ok"], r
+        assert wait_until(lambda: any(e[3].get("motion", {}).get("name") == "GetupFront"
+                                      for e in requests(srv, "PUT", "motions")), 5)
+
+
+def test_tip_over_then_get_up():
+    """The simulator test button: a gentle push fells the robot (front/back), get_up() then stands it up; refused
+    with a robot connected."""
+    c = ctl()
+    assert c.tip_over("sideways")["ok"] is False
+    for direction in ("front", "back"):
+        r = c.tip_over(direction)
+        assert r["ok"] and r["direction"] == direction, r
+        assert wait_until(lambda: c.state()["sim"]["fallen"], 8), direction
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+        g = c.sim.get_sensors_gyro()["data"]["gyro"][0]
+        assert (abs(g["euler-x"]) < 60) == (direction == "front"), (direction, g["euler-x"])  # face down ~0, on the back ~180
+        r = c.get_up()
+        assert r["ok"] and r["posture"] == ("front" if direction == "front" else "rear"), r
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 20)
+    assert c.tip_over("front")["ok"]  # standing again: a new push is accepted
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    assert c.get_up()["ok"]
+    assert wait_until(lambda: not c.state()["sim"]["fallen"], 20)
+    with Connected("robot") as (c2, srv):
+        assert c2.tip_over("front")["ok"] is False
+
+
+def test_gait_direction_changes_do_not_tip():
+    """A second key during a walk, or a reversal, must not throw the robot: the gait ramps every change."""
+    c = ctl()
+    assert c.gait(5, 0, steps=0, lease_s=30)["ok"]
+    time.sleep(2.0)
+    assert c.gait(5, -5, steps=0, lease_s=30)["updated"]  # forward -> forward + right
+    time.sleep(2.0)
+    assert c.gait(-5, 0, steps=0, lease_s=30)["updated"]  # -> backward
+    time.sleep(2.5)
+    assert c.gait_stop()["ok"] and wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    assert not c.state()["sim"]["fallen"] and c.sim.torso_tilt_deg() < 15
+
+
 def test_robot_gait_stop_decelerates():
     """A normal stop steps the robot's walking speeds down before exit_motion_gait; STOP exits at once."""
     with Connected("robot") as (c, srv):

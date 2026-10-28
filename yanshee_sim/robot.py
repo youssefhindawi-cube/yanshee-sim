@@ -22,6 +22,47 @@ SCENE = os.path.join(ROOT, "model", "scene.xml")
 SERVO_MODES = ("work", "program")
 LED_COLORS = {"button": ("white", "red", "green", "blue", "yellow", "purple", "cyan"), "camera": ("red", "green", "blue")}
 LED_MODES = {"button": ("on", "off", "blink", "breath"), "camera": ("on", "off", "blink")}
+# LED geoms added to the model by sim_extras.add_leds (chest button ring, two eye discs), their colours, and
+# the one function that turns an LED setting into a colour: the MuJoCo window and the web GUI's camera streams
+# both render from the model's geom_rgba / mat_emission, which SimRobot repaints as the simulation runs.
+LED_GEOMS = {"button": ("led_chest",), "camera": ("led_eye_left", "led_eye_right")}
+LED_RGB = {"white": (1.0, 1.0, 1.0), "red": (1.0, 0.05, 0.05), "green": (0.1, 1.0, 0.2), "blue": (0.1, 0.35, 1.0),
+           "yellow": (1.0, 0.85, 0.05), "purple": (0.65, 0.1, 1.0), "cyan": (0.05, 0.95, 1.0)}
+LED_REPAINT_S = 0.02  # sim seconds between repaints (blink and breath animate at 50 Hz)
+
+
+def led_rgba(state, t):
+    """(r, g, b, a) and emission for one LED {"color", "mode"} at time t (on / off / blink 1 Hz / breath 3 s)."""
+    r, g, b = LED_RGB.get(state.get("color"), LED_RGB["white"])
+    mode = state.get("mode", "on")
+    level = {"off": 0.0, "blink": 1.0 if (t % 1.0) < 0.5 else 0.0,
+             "breath": 0.5 - 0.5 * math.cos(2 * math.pi * t / 3.0)}.get(mode, 1.0)
+    dark = 0.12
+    return (dark + (r - dark) * level, dark + (g - dark) * level, dark + (b - dark) * level, 1.0), 0.8 * level
+
+
+def led_ids(model):
+    """{kind: [(geom id, material id), ...]} for the LED geoms present in model ({} when add_leds was not used)."""
+    out = {}
+    for kind, names in LED_GEOMS.items():
+        for n in names:
+            try:
+                gid = model.geom(n).id
+            except KeyError:
+                continue
+            out.setdefault(kind, []).append((gid, int(model.geom_matid[gid])))
+    return out
+
+
+def paint_led_model(model, ids, led_state, t):
+    """Write the LED colours for led_state ({kind: {"color", "mode"}}) at time t into model.geom_rgba and
+    mat_emission, so every renderer of this model (the viewer window, offscreen cameras) shows the same LEDs."""
+    for kind, entries in ids.items():
+        rgba, emission = led_rgba(led_state.get(kind, {}), t)
+        for gid, mid in entries:
+            model.geom_rgba[gid] = rgba
+            if mid >= 0:
+                model.mat_emission[mid] = emission
 # robot system motions (power off, servo calibration, burn-in...): never started by play_builtin unless asked
 SYSTEM_MOTION_PREFIXES = ("shutdown", "actionaging", "calibration", "resetswitch", "enterenergysaving",
                           "exitenergysaving")
@@ -135,9 +176,12 @@ IMU_GYRO_BIAS_DEG_S = tuple(math.degrees(b) for b in (-0.01994, -0.00107, 0.0048
 class SimRobot(Robot):
     """MuJoCo backend. Physics runs in a background thread at real time (or on demand with realtime=False)."""
 
-    def __init__(self, viewer=True, realtime=True, fixed_base=False, manual=False, scene=SCENE, spec_hook=None):
+    def __init__(self, viewer=True, realtime=True, fixed_base=False, manual=False, scene=SCENE, spec_hook=None,
+                 key_callback=None):
         """manual=True: servo targets come from the viewer's Control sliders instead of set_servos_angles.
-        spec_hook(spec): edits the MjSpec before compiling (e.g. sim_extras.add_leds adds LED markers)."""
+        spec_hook(spec): edits the MjSpec before compiling (e.g. sim_extras.add_leds adds LED markers).
+        key_callback(keycode): called for key presses (and repeats while held) in the viewer window; also
+        settable later as .on_key. GLFW key codes: W 87, A 65, S 83, D 68, Q 81, E 69, X 88, Esc 256, arrows 262-265."""
         import mujoco
         self._mj = mujoco
         self.fixed_base = fixed_base
@@ -161,6 +205,13 @@ class SimRobot(Robot):
         mujoco.mj_resetDataKeyframe(m, self.data, self._key)
         mujoco.mj_forward(m, self.data)
         self._act = {n: m.actuator(n).id for n in NAMES}
+        self._led_ids, self._led_t = led_ids(m), -1.0
+        self._support_ids = []  # the box soles (build_models adds them); else the ankle-roll bodies
+        for n in ("RightAnkleUD_sole", "LeftAnkleUD_sole"):
+            try:
+                self._support_ids.append(("geom", m.geom(n).id))
+            except KeyError:
+                self._support_ids.append(("body", m.body(n[:-5]).id))
         self._qadr = {n: m.jnt_qposadr[m.joint(n).id] for n in NAMES}
         self._kp = {n: m.actuator_gainprm[i, 0] for n, i in self._act.items()}
         self._bias = {n: m.actuator_biasprm[i, 1:3].copy() for n, i in self._act.items()}
@@ -171,12 +222,14 @@ class SimRobot(Robot):
         self._lock = threading.RLock()
         self._imu_hold, self._imu_rng, self.imu_noise = None, None, True
         self.led = {"button": {"color": "blue", "mode": "breath"}, "camera": {"color": "green", "mode": "on"}}
+        self.paint_leds(force=True)
         self.manual = manual
+        self.on_key = key_callback
         self._viewer = None
         self.realtime = realtime
         if viewer:
             import mujoco.viewer
-            self._viewer = mujoco.viewer.launch_passive(m, self.data, show_left_ui=False)
+            self._viewer = mujoco.viewer.launch_passive(m, self.data, key_callback=self._viewer_key, show_left_ui=False)
         self._running = realtime
         if realtime:
             self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -190,6 +243,7 @@ class SimRobot(Robot):
     def _restart(self):
         """Back to the reset keyframe (standing, all servos working)."""
         self._mj.mj_resetDataKeyframe(self.model, self.data, self._key)
+        self._imu_hold = None  # the clock restarts: a held sample would otherwise be served again
         for n in NAMES:
             self._set_gain(n, "work")
         self._mj.mj_forward(self.model, self.data)
@@ -206,6 +260,7 @@ class SimRobot(Robot):
             self.data.ctrl[self._act[n]] = a + (b - a) * s  # linear profile, like the servo's timed move
         self._mj.mj_step(self.model, self.data)
         self._last_time = self.data.time
+        self.paint_leds()
 
     def _loop(self):
         start_wall, start_sim = time.perf_counter(), self.data.time
@@ -296,12 +351,34 @@ class SimRobot(Robot):
             self._restart()
         return {"code": 0, "data": {}, "msg": "success"}
 
+    def paint_leds(self, force=False):
+        """Repaint the LED geoms from .led at the current sim time (at most every LED_REPAINT_S of sim time unless
+        force). Called from the physics step; call it yourself when stepping the model from outside (view.py)."""
+        if not self._led_ids:
+            return
+        t = self.data.time
+        if not force and 0 <= t - self._led_t < LED_REPAINT_S:
+            return
+        paint_led_model(self.model, self._led_ids, self.led, t)
+        self._led_t = t
+
+    def _viewer_key(self, keycode):
+        """Key presses in the MuJoCo window (and key repeats while a key is held) go to on_key(keycode)."""
+        cb = self.on_key
+        if cb is None:
+            return
+        try:
+            cb(int(keycode))
+        except Exception as e:  # noqa: BLE001 - a handler error must not take the viewer down
+            print(f"viewer key handler failed: {e}")
+
     def set_led(self, type, color, mode):
-        """Remember an LED setting (YanAPI set_robot_led values); the renderer shows it."""
+        """Set an LED (YanAPI set_robot_led values): the viewer window and the GUI's cameras show it at once."""
         if type not in LED_COLORS or color not in LED_COLORS[type] or mode not in LED_MODES[type]:
             return {"code": 1, "data": {}, "msg": f"bad led setting {type}/{color}/{mode}"}
         with self._lock:
             self.led[type] = {"color": color, "mode": mode}
+            self.paint_leds(force=True)
         return {"code": 0, "data": {}, "msg": "success"}
 
     def get_led(self):
@@ -317,6 +394,7 @@ class SimRobot(Robot):
     def jump_to(self, angles):
         """Teleport joints and targets to a {servo: deg} pose (no motion). Use while the robot is held (fixed_base)."""
         with self._lock:
+            self._imu_hold = None
             for n, deg in angles.items():
                 if n in self._act and _is_number(deg):
                     rad = math.radians(deg)
@@ -331,6 +409,27 @@ class SimRobot(Robot):
         with self._lock:
             R = self.data.xmat[self.model.body("base_link").id].reshape(3, 3)
             return math.degrees(math.acos(max(-1.0, min(1.0, R[2, 2]))))
+
+    SUPPORT_R_M = 0.05  # m: the capture point may wander this far from the support centre before it counts as outside
+
+    def balance(self):
+        """Momentum check, model frame: centre of mass, its horizontal velocity, the capture point (where the robot
+        would have to step to come to rest: com + v * sqrt(h / g)) and the support centre (midpoint of the soles).
+        margin_m > 0 means the capture point lies that far outside a circle of SUPPORT_R_M around the support
+        centre: momentum the feet cannot absorb, the robot is about to tip. SimGait brakes on it."""
+        import numpy as np
+        with self._lock:
+            m, d = self.model, self.data
+            self._mj.mj_subtreeVel(m, d)
+            com, vel = d.subtree_com[0].copy(), d.subtree_linvel[0].copy()
+            pts = [d.geom_xpos[i] if kind == "geom" else d.xpos[i] for kind, i in self._support_ids]
+            support = np.mean(pts, axis=0)[:2] if pts else com[:2]
+        h = max(com[2] - min((p[2] for p in pts), default=0.0), 0.05)
+        cp = com[:2] + vel[:2] * math.sqrt(h / 9.81)
+        off = cp - support
+        return {"com_m": [float(com[0]), float(com[1]), float(com[2])], "vel_m_s": [float(vel[0]), float(vel[1])],
+                "capture_point_m": [float(cp[0]), float(cp[1])], "support_m": [float(support[0]), float(support[1])],
+                "offset_m": [float(off[0]), float(off[1])], "margin_m": float(math.hypot(off[0], off[1]) - self.SUPPORT_R_M)}
 
     def torso_lean(self):
         """(lean about x, lean about y, rate about x, rate about y) of the torso in the model frame, in deg and

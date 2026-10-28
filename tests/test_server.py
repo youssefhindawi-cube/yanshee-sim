@@ -563,6 +563,29 @@ def test_gait_dead_man():
     c.reset()
 
 
+def test_getup_route():
+    client, c = setup()
+    assert ok(client.post("/api/getup"))["standing"] is True  # already standing
+    refused(client.post("/api/tipover", json={"direction": "up"}), 400)
+    assert ok(client.post("/api/tipover", json={"direction": "front"}))["direction"] == "front"
+    assert wait_until(lambda: client.get("/api/state").json()["sim"]["fallen"], 8)
+    assert wait_until(lambda: client.get("/api/state").json()["activity"]["kind"] == "idle", 8)
+    assert ok(client.post("/api/getup"))["posture"] == "front"
+    assert wait_until(lambda: not client.get("/api/state").json()["sim"]["fallen"], 20)
+    c.reset()
+    assert "balance_margin_cm" in client.get("/api/state").json()["sim"]
+
+
+def test_gait_turn_param():
+    client, c = setup()
+    refused(client.post("/api/gait", json={"turn": 7}), 400)
+    ok(client.post("/api/gait", json={"speed_v": 0, "turn": -3, "lease": 2}))
+    assert wait_until(lambda: "clockwise" in client.get("/api/state").json()["activity"]["detail"], 5)
+    ok(client.post("/api/gait/stop"))
+    assert wait_until(lambda: client.get("/api/state").json()["activity"]["kind"] == "idle", 8)
+    c.reset()
+
+
 def test_robot_extras_pause_tts_stop_photo_resolution():
     client, c = setup()
     fake = start_fake(motion_seconds=20)

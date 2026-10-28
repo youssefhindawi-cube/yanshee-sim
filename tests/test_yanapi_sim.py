@@ -327,9 +327,10 @@ def test_pose_editor_validates_saves_and_reloads():
 def test_view_reset_restores_reset_pose():
     import mujoco
     view = _load_script("view")
-    bot = SimRobot(viewer=False, realtime=False)
+    from yanshee_sim import sim_extras
+    bot = SimRobot(viewer=False, realtime=False, spec_hook=sim_extras.add_leds)
     m, d = bot.model, bot.data
-    mujoco.set_mjcb_control(view.reset_hold_callback(m))
+    mujoco.set_mjcb_control(view.reset_hold_callback(bot))  # takes the SimRobot now (it also paints the LEDs)
     try:
         for _ in range(250):
             mujoco.mj_step(m, d)

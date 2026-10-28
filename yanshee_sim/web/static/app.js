@@ -34,9 +34,11 @@
     { task: "object", label: "Objects" }, { task: "qr", label: "QR code" },
   ];
   const PHRASES = ["Hello! I am Yanshee.", "Welcome to our stand!", "Watch me dance!", "Thank you, goodbye!"];
-  // hold-to-walk directions: [speed_v sign (+ forward), speed_h sign (+ robot's left)]
-  const DIRS = { f: [1, 0], b: [-1, 0], l: [0, 1], r: [0, -1], fl: [1, 1], fr: [1, -1], bl: [-1, 1], br: [-1, -1] };
-  const KEY_DIRS = { ArrowUp: "f", KeyW: "f", ArrowDown: "b", KeyS: "b", ArrowLeft: "l", KeyA: "l", ArrowRight: "r", KeyD: "r" };
+  // hold-to-walk directions: [speed_v sign (+ forward), speed_h sign (+ robot's left), turn sign (+ anticlockwise)]
+  const DIRS = { f: [1, 0, 0], b: [-1, 0, 0], l: [0, 1, 0], r: [0, -1, 0], fl: [1, 1, 0], fr: [1, -1, 0], bl: [-1, 1, 0], br: [-1, -1, 0],
+    tl: [0, 0, 1], tr: [0, 0, -1] };
+  const KEY_DIRS = { ArrowUp: "f", KeyW: "f", ArrowDown: "b", KeyS: "b", ArrowLeft: "l", KeyA: "l", ArrowRight: "r", KeyD: "r",
+    KeyQ: "tl", KeyE: "tr" };
   const TABS = ["motion", "servos", "settings", "voice", "log"];
   const NAME_RE = /^[A-Za-z0-9_-]+$/;
   // routine warnings that go to the log without a toast (they repeat on every slider move)
@@ -358,7 +360,7 @@
   // ------------------------------------------------------------------ walking (hold to walk)
   // active: a direction is held and a walk was asked for; sent: a /api/gait went out and no stop has been confirmed
   // since (a gait request that timed out on this side may still have started the robot walking on the server)
-  const walk = { held: new Map(), keys: new Set(), active: false, sent: false, lastKey: "", chain: Promise.resolve(), timer: null };
+  const walk = { held: new Map(), keys: new Set(), active: false, sent: false, lastKey: "", chain: Promise.resolve(), timer: null, turnFired: false };
   const WALK_KEEPALIVE_MS = 400; // the server stops an open-ended walk after 1.5 s without one (dead-man)
   function walkKeepalive(on) {
     clearInterval(walk.timer); walk.timer = null;
@@ -368,24 +370,31 @@
     }, WALK_KEEPALIVE_MS);
   }
   function walkVector() {
-    let v = 0, hh = 0;
-    for (const d of [...walk.held.values(), ...walk.keys]) { v += DIRS[d][0]; hh += DIRS[d][1]; }
-    return [Math.sign(v), Math.sign(hh)];
+    let v = 0, hh = 0, t = 0;
+    for (const d of [...walk.held.values(), ...walk.keys]) { v += DIRS[d][0]; hh += DIRS[d][1]; t += DIRS[d][2]; }
+    return [Math.sign(v), Math.sign(hh), Math.sign(t)];
   }
   function walkPaint() {
     const on = new Set([...walk.held.values(), ...walk.keys]);
-    $$("#dpad button[data-dir]").forEach((b) => b.classList.toggle("held", on.has(b.dataset.dir)));
+    $$("button[data-dir]").forEach((b) => b.classList.toggle("held", on.has(b.dataset.dir)));
   }
   function walkEnqueue(fn) { walk.chain = walk.chain.then(fn, fn).catch(() => {}); return walk.chain; }
   function walkUpdate() {
     walkPaint();
-    const [sv, sh] = walkVector();
-    if (!sv && !sh) {
+    const [sv, sh, st] = walkVector();
+    if (!st) walk.turnFired = false;
+    if (!sv && !sh && !st) {
       if (walk.active || walk.sent) walkSendStop();
       return;
     }
     const sp = +$("#walkSpeed").value || 3;
-    const body = { speed_v: sv * sp, speed_h: sh * sp, steps: 0, period: +$("#walkPeriod").value || 1, wave: $("#walkWave").checked };
+    if (st && mode() !== "sim") {
+      // the robot's gait cannot turn: a press plays its turn-around built-in once (the twin follows in Both mode)
+      if (!walk.turnFired) { walk.turnFired = true; playAction({ name: "turn around", version: "v1" }, st > 0 ? "left" : "right"); }
+      if (!sv && !sh) { if (walk.active || walk.sent) walkSendStop(); return; }
+    }
+    const body = { speed_v: sv * sp, speed_h: sh * sp, turn: mode() === "sim" ? st * sp : 0, steps: 0,
+      period: +$("#walkPeriod").value || 1, wave: $("#walkWave").checked };
     const key = JSON.stringify(body);
     if (walk.active && key === walk.lastKey) return;
     walk.active = true; walk.lastKey = key;
@@ -411,7 +420,7 @@
     walk.held.clear(); walk.keys.clear(); walkPaint();
     if (was) walkSendStop();
   }
-  $$("#dpad button[data-dir]").forEach((b) => {
+  $$("button[data-dir]").forEach((b) => {
     const dir = b.dataset.dir;
     b.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
@@ -440,6 +449,13 @@
     if (walk.active || walk.sent) api("POST", "/api/gait/stop", undefined, { quiet: true, keepalive: true });
   });
   $("#dpadStop").addEventListener("click", () => { walkRelease(); api("POST", "/api/gait/stop"); });
+  $("#getupBtn").addEventListener("click", (e) => { walkRelease(); busy(e.currentTarget, () => api("POST", "/api/getup")); });
+  for (const [id, direction] of [["#tipFront", "front"], ["#tipBack", "back"]]) {
+    $(id).addEventListener("click", (e) => {
+      if (mode() !== "sim") { toast("Tip over is a simulator test: switch to Sim mode first.", "info"); return; }
+      walkRelease(); busy(e.currentTarget, () => api("POST", "/api/tipover", { direction }));
+    });
+  }
   $("#walkSpeed").addEventListener("input", (e) => {
     $("#walkSpeedOut").textContent = e.target.value; store.set("walkSpeed", +e.target.value);
     if (walk.active) walkUpdate(); // the server changes speed in place
@@ -448,14 +464,8 @@
   $("#walkWave").addEventListener("change", (e) => { store.set("walkWave", e.target.checked); if (walk.active) walkUpdate(); });
   $("#walkSpeed").value = store.get("walkSpeed", 3);
   $("#walkSpeedOut").textContent = $("#walkSpeed").value;
-  $$("[data-turn]").forEach((b) => b.addEventListener("click", () => {
-    const a = actions.find((x) => x.name === "turn around");
-    if (a && !availability(a, b.dataset.turn).ok) { toast(availability(a, b.dataset.turn).why, "info"); return; }
-    flash(b);
-    playAction({ name: "turn around", version: "v1" }, b.dataset.turn);
-  }));
 
-  // global keys: Esc = STOP anywhere; arrows/WASD walk on the Motion tab
+  // global keys: Esc = STOP anywhere; arrows/WASD walk and Q/E turn from any tab (not while typing in a field)
   const typing = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { // STOP anywhere, also while a confirm dialog is open (it closes as Cancel)
@@ -463,7 +473,7 @@
       if (dlg.open) { doStop(); dlg.close("cancel"); return; }
       e.preventDefault(); doStop(); return;
     }
-    if (ui.tab !== "motion" || typing(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (typing(document.activeElement) || $("#confirmDlg").open || e.ctrlKey || e.metaKey || e.altKey) return;
     const d = KEY_DIRS[e.code];
     if (!d) return;
     e.preventDefault();
@@ -559,17 +569,14 @@
     const getups = actions.filter((a) => a.category === "get-up");
     const resetB = h("button", { type: "button", class: "btn primary", title: "Stand up / reset pose" }, "Stand up (reset)");
     resetB.addEventListener("click", () => busy(resetB, () => api("POST", "/api/reset")));
-    $("#getupRow").replaceChildren(resetB, ...getups.map((a) => {
+    const getupB = h("button", { type: "button", class: "btn", title: "After a fall: the robot's GetupFront/GetupRear by its IMU; in the simulator its own get-up motion (stood up if it cannot)" }, "Get up");
+    getupB.addEventListener("click", () => busy(getupB, () => api("POST", "/api/getup")));
+    $("#getupRow").replaceChildren(resetB, getupB, ...getups.map((a) => {
       const av = availability(a);
       const b = h("button", { type: "button", class: "btn" + (av.ok ? "" : " na"), title: av.why || "" }, pretty(a.label || a.name));
       b.addEventListener("click", () => { const av2 = availability(a); if (!av2.ok) { toast(av2.why, "info"); return; } playAction(a, "", b); });
       return b;
     }));
-    const turn = actions.find((a) => a.name === "turn around");
-    $$("[data-turn]").forEach((b) => {
-      const av = turn ? availability(turn, b.dataset.turn) : { ok: mode() !== "sim", why: "Turning is not available in simulation." };
-      b.classList.toggle("na", !av.ok); b.title = av.why || "";
-    });
   }
   $("#actSearch").addEventListener("input", renderActions);
   $("#actSpeed").value = store.get("actSpeed", "normal");
