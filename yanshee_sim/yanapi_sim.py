@@ -171,9 +171,10 @@ def _find_motion(name, direction=""):
     for stem in stems:
         for d in MOTION_DIRS:
             for s in dict.fromkeys((stem, stem.replace(" ", "_"))):
-                p = os.path.join(d, s + ".json")
-                if os.path.exists(p):
-                    return p
+                for ext in (".json", ".hts"):  # our files, or the robot's own motion files
+                    p = os.path.join(d, s + ext)
+                    if os.path.exists(p):
+                        return p
     return None
 
 
@@ -234,7 +235,7 @@ def get_motion_list_value():
     found = set()
     for d in MOTION_DIRS:
         if os.path.isdir(d):
-            found |= {f[:-5] for f in os.listdir(d) if f.endswith(".json")}
+            found |= {os.path.splitext(f)[0] for f in os.listdir(d) if f.endswith((".json", ".hts"))}
     return ["reset"] + sorted(found - {"reset"})
 
 

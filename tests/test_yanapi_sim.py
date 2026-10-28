@@ -116,6 +116,10 @@ def test_motion_list_dedup():
             _write(folder, "nod", NOD)
             _write(folder, "reset", NOD)
         assert Y.get_motion_list_value() == ["reset", "nod"]
+        from yanshee_sim import hts
+        hts.save(NOD, os.path.join(d, "nod_hts.hts"))  # the robot's own files are found too
+        assert Y.get_motion_list_value() == ["reset", "nod", "nod_hts"]
+        assert Y._find_motion("nod_hts").endswith("nod_hts.hts") and Y._find_motion("nod").endswith("nod.json")
 
 
 def test_stop_cancels_playback_and_holds():
