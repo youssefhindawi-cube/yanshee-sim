@@ -4,3 +4,5 @@ ros2_ws/log/
 __pycache__/
 *.pyc
 robot_dump/*/hts/
+# third-party downloads (no licences; tools/build_models.py does not read them)
+external/

@@ -134,7 +134,7 @@ Reset, Pause/Resume of a playing built-in, and these tabs:
 
 | Tab | Contents |
 |---|---|
-| **Motion control** | Walk with the D-pad or the keys (hold to walk, release to stop; speed 1–5, side steps, arm swing); under the D-pad, **Rotate** ↺/↻ (hold, or <kbd>Q</kbd>/<kbd>E</kbd>: the simulator pivots slowly, the robot plays its own turn-around motion per press) and **Get up** (after a fall: the robot's GetupFront/GetupRear chosen by its IMU, the simulator's own get-up motion, or it is stood up when that fails), plus two simulator-only **Tip over** buttons that push the robot over gently (front/back) so the fall detection and Get up can be tried; the robot's built-in actions grouped by category (gestures, locomotion, fight, football, get-up, dances with music, v2 layered, your motion files) with direction, speed and repeat. |
+| **Motion control** | Walk with the D-pad or the keys (hold to walk, release to stop; speed 1–5, side steps, arm swing); under the D-pad, **Rotate** ↺/↻ (hold, or <kbd>Q</kbd>/<kbd>E</kbd>: the simulator pivots slowly, the robot plays its own turn-around motion per press) and **Get up** (after a fall, chosen by the IMU: face down the robot's own Base_GetupF then reset, on its back GetupRear; the simulator plays the same two motions), plus two simulator-only **Tip over** buttons that push the robot over gently (front/back) so the fall detection and Get up can be tried; the robot's built-in actions grouped by category (gestures, locomotion, fight, football, get-up, dances with music, v2 layered, your motion files) with direction, speed and repeat. |
 | **Servos & recorder** | 17 sliders by body part with live readback; limp/work per limb group (robot); capture keyframes with runtime and hold, edit and reorder them, preview in sim, play on the target, check report, save/load/delete motion files (JSON and `.hts`). |
 | **Settings & sensors** | Volume, chest/eye LEDs, language, fall management, versions, the IMU numbers with a rolling chart (euler/gyro), add-on sensors, sim battery. |
 | **Voice & vision** | TTS (the robot speaks; in sim the browser does), vision tasks with result cards (only colour detection works in sim), face entry, photo with resolution. |
@@ -170,7 +170,27 @@ The server owns **one** simulation. Two ways to watch it:
 `scripts/view.py` is a *separate* simulation and does not follow the page. With a robot connected, the *head*
 camera shows the robot's real camera in **Robot** mode (the stream URL `/api/stream/head.mjpg?source=robot|sim` forces
 either); in **Both** mode the video stays the simulator's, which follows the robot's readback for what it cannot
-emulate (dances, robot-only built-ins, the robot's gait).
+emulate (dances, robot-only built-ins).
+
+**The two walking methods.** **AppWalk** is how the Yanshee mobile app walks the robot (captured from the app on 29
+Oct 2026): UBTECH's onboard gait, open-loop (no IMU feedback), at speed 2 with arm swing, turning in place with its
+TurnLeft/TurnRight motions resent while the stick is held, and stopping with an all-zero gait command. **SwayStep** is
+our gait (`sim_extras.SimGait`): hip-driven steps with lateral sway, ankle balance from the torso lean the IMU measures,
+and capture-point foot placement. **Robot walk** (next to Auto get-up) picks the robot's method: *App* or *Sway*.
+Sway streams SwayStep's servo frames to `/hal_angles_set` 50 times a second over the robot link
+(`yanshee_sim/robot_stream.py`, a small ROS node it starts on the robot over ssh), with the lean and tilt from the
+robot's IMU; without the body's velocity it walks without the capture-point brake. With a robot connected (Robot or
+Both mode) the simulator **mirrors** the real robot: joints from its encoders, body tilt and heading from its IMU,
+physics paused; it plays on its own only motions it has a version of. A hidden **shadow simulator**
+(`yanshee_sim/shadow.py`) gets the robot's own servo frames while it walks. Two logs per session, one name: the robot
+logs its readings **on the robot** with its own clock (`/home/pi/yanshee_logs/robot_<session>.jsonl`: IMU, encoders,
+every servo frame with the laptop's send time, hal's monitor, firmware log lines), so the Wi-Fi delay does not distort
+them; the laptop logs the simulator side (`robot_dump/sim2real_<session>.jsonl`) and clock pings that line the two up.
+The robot's log is copied to `robot_dump/robot_logs/` on disconnect (or `python3 tools/fetch_robot_logs.py --ip IP`);
+`python3 tools/sim2real_report.py` merges them and sums up each walk and the link's delay. `tools/joystick.py` is a minimal AppWalk page. Falls are counted per method in
+`robot_dump/walk_stats.jsonl` (face down, on its back, on a side, with the switch just before each fall);
+`python3 tools/walk_stats.py` prints the comparison. Turn on **Auto get-up** to have a real fall recovered by itself
+(`yanshee_sim/recovery.py`; a robot laid down by hand is not a fall).
 
 ### No robot? Use the fake one
 
@@ -270,6 +290,18 @@ python3 tools/robot_checks.py gait --ip IP --stop-test # built-in gait: gentle v
 ```
 
 Each mode saves its numbers to `robot_dump/`, to be turned into simulator constants. Nothing is written to the robot.
+
+### `tools/getup_compare.py` — a real get-up next to the simulator's
+
+```bash
+python3 tools/getup_compare.py robot_dump/getup_GetupFront_20261029_134112.json        # same .hts in the sim, smooth floor
+python3 tools/getup_compare.py robot_dump/getup_GetupFront_20261029_134112.json --mat  # on the play mat
+python3 tools/getup_compare.py LOG --torque 1.3 --friction 1.2 --trace                 # what-if servo/floor, both traces
+```
+
+Takes a `tools/getup_lab.py` log, lies the simulator down the same way, plays the same `.hts` on time (as the robot's
+motion engine does) and prints who stood up and how far the two euler-x traces are apart. `SERVO_TORQUE` and
+`MAT_FRICTION` were fitted with it.
 
 ### `tools/tune_gait.py` — tune the simulator's walk
 
@@ -414,10 +446,10 @@ with Controller() as ctl:                                   # mode "sim"
     ctl.stop_all()                                          # STOP: everything, at once
 ```
 
-Also `get_up()`: after a fall, the robot's GetupFront/GetupRear chosen from its IMU (euler-x about 0 face down,
-about 180 on the back); in the simulator the motion `motions/builtin/getup_front.json` / `getup_rear.json` when one
-exists (`tools/tune_getup.py` searches for one by trial in the physics), else the robot is stood up by `respawn()`
-and an event says so. `state()["sim"]["balance_margin_cm"]` is the capture-point margin (negative = inside the
+Also `get_up()`: after a fall, chosen from the IMU (euler-x about 0 face down, about 180 on the back): face down
+the robot's own Base_GetupF, then `reset` out of its crouch unless a servo stall-locked (an event says which); on its
+back GetupRear. The simulator plays the same motions (`motions/builtin/getup_front.json` / `getup_rear.json`) and
+falls back to `respawn()`, with an event, only if it is still down. `state()["sim"]["balance_margin_cm"]` is the capture-point margin (negative = inside the
 support circle). `reflex_enabled` (default off) makes an idle, pushed robot take a quick step.
 
 Every method returns `{"ok": ...}` and never raises on robot errors (only `set_mode` raises `ModeError`). Method list,
@@ -585,7 +617,7 @@ ros2 launch yanshee_description display.launch.py rviz:=false
 
 ## 12. Rebuilding the model
 
-`tools/build_models.py` reads `source_model/robot.json` (Git LFS) and writes `model/yanshee.xml`, `model/scene.xml`,
+`tools/build_models.py` reads `source_model/robot.json` (Git LFS) and writes `model/yanshee.xml`, `model/scene.xml`, `model/scene_mat.xml`,
 `model/meshes/*.stl` (MuJoCo) and `ros2_ws/src/yanshee_description/urdf/yanshee.urdf` + `meshes/` (ROS 2). The
 MuJoCo "reset" keyframe and the RViz slider start values come from `RESET_POSE`. Edit, then rebuild:
 
@@ -594,7 +626,7 @@ MuJoCo "reset" keyframe and the RViz slider start values come from `RESET_POSE`.
 | Servo limits or reset pose | `yanshee_sim/servos.py` |
 | Servo strength, damping or armature | `SERVO_KP`, `SERVO_TORQUE`, `SERVO_DAMPING`, `SERVO_ARMATURE` in `tools/build_models.py` |
 | Foot soles (flat contact boxes under the feet) | `SOLE_INSET`, `SOLE_THICKNESS` in `tools/build_models.py` |
-| Floor, lights or cameras | `SCENE` in `tools/build_models.py` |
+| Floor, lights or cameras | `SCENE` in `tools/build_models.py`; the play mat (`model/scene_mat.xml`, `SimRobot(scene=SCENE_MAT)`, `play_motion.py --mat`) is the same scene with floor friction `MAT_FRICTION` |
 | The walk (stride, sway, cycle, balance gains, stop fade-out) | `SimGait` class attributes in `yanshee_sim/sim_extras.py`; values from `python3 tools/tune_gait.py` |
 | The emulated IMU (rate, upright value, noise) | `IMU_*` in `yanshee_sim/robot.py` |
 
@@ -606,7 +638,7 @@ Then `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit
 
 | Test | Checks |
 |---|---|
-| `tests/test_models.py` | Reset pose inside limits; URDF and MuJoCo forward kinematics agree (< 1 µm); the robot stands for 3 s and stands still on its box soles; the IMU's fields, units and fall convention; the walk stops at full speed without falling |
+| `tests/test_models.py` | Reset pose inside limits; link inertias physical, total mass; the mat scene; URDF and MuJoCo forward kinematics agree (< 1 µm); the robot stands for 3 s and stands still on its box soles; the IMU's fields, units and fall convention; the walk stops at full speed without falling |
 | `tests/test_mirror.py` | Sim → robot sends changes with the speed cap, blocks self-collisions, starts aligned; robot → sim follows and clamps |
 | `tests/test_motion.py` | Motion validation, playback and cancelling, the self-collision sweep, `play_motion.py` headless and against the fake robot |
 | `tests/test_rest.py` | `YansheeRest` against the fake robot: every endpoint, timeouts, refusals, bad replies, the same paths and payloads as the official `YanAPI.py` |
@@ -615,7 +647,7 @@ Then `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit
 | `tests/test_server.py` | The web server: every endpoint, bad input, body limits, the WebSocket, MJPEG streams and the robot-camera proxy, a real uvicorn shutdown |
 | `tests/test_yanapi_sim.py` | `run_in_sim.py`'s simulated YanAPI (official examples run unchanged), `record_real_motion.py`, `pose_editor.py`, `view.py` |
 
-`python3 -m pytest -q tests` runs all 129 (4–6 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
+`python3 -m pytest -q tests` runs all 143 (4–6 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
 runs one file. `tests/fake_robot.py` is the fake Yanshee REST server behind the robot tests; run it by hand for GUI
 work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 
@@ -625,17 +657,18 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 
 **High fidelity**
 - **Kinematics:** joint axes, link lengths, meshes and head camera pose come from UBTECH's CAD-derived Webots model; URDF and MuJoCo agree to 1 µm. The course's "straight leg" servo values (knee 128 right / 52 left) match the model's geometry within its own left-right asymmetry (132 / 52).
-- **Mass:** 2.10 kg, link by link from the same model (the real robot is about 2.05 kg).
+- **Mass and inertia:** 2.10 kg, link by link from the same model (the real robot is about 2.05 kg; UBTECH's own Webots model, `Yanshee0329.wbo` in its 2022 simulation platform, has the same per-link values). That model adds a lumped rotor term of 1.4e-4 kg·m² on each link's own joint axis; without it the tensors equal a uniform-density integration of each link's mesh (1–5 %), with it 15 of 17 are physically impossible and MuJoCo's `balanceinertia` used to turn them into spheres (an 8 g shoulder bracket with a 78 mm radius of gyration). `build_models.py` takes the term off (`SOURCE_ROTOR_INERTIA`); a rotor belongs in the joint's armature. Uniform density is still an approximation: the servos inside each link are denser than its shell. The ROS URDF of ChancesSon/Yanshee_ROS (and shaoyiwork/yanshee_moveit) is a SolidWorks export with every part filled with plastic at about 1020 kg/m³, servos missing (shoulder-flex link 16 g against 85 g, foot 181 g against 93 g, 2.22 kg in all), so its masses were not used.
 - **Reset pose:** UBTECH's own `init` pose (RightElbowFlex 165), confirmed by real `.hts` files.
 - **Head camera:** 640×480, field of view from a real calibration.
 - **Feet:** flat box soles, level in the reset pose. The mesh sole has pads and sits 1.2° toe-down in the reset pose, so a mesh-on-floor contact made the standing robot rock between 2 and 6 contact points (1–1.5° of hip/ankle chatter, 8 m/s² of IMU noise); the mesh still counts for self-collision.
 
 **Approximate, to be measured on the robot** (the measurements are the session plan)
-- **Servo model:** gain 8 N·m/rad, 2 N·m limit, damping and armature are assumptions. UBTECH's own 2018 "walk" keyframes walk in the sim at 400 ms per frame but not at 240 ms, and its "walk back" falls at any gain, so the servo speed/stiffness is where the sim-to-real gap is. The servo family's datasheets say about 0.2 s per 60° (300 °/s) and 8–12 kg·cm. Arm choreography and slow poses transfer well; fast balance-critical moves need the measured values first.
+- **Servo torque (fitted 29 Oct 2026):** 1.15 N·m (was 2.0). No Yanshee servo datasheet is published anywhere; UBTECH's Alpha 1 Pro manual gives its servos 8 kg·cm at 6.5 V and 12 kg·cm at 8.5 V, 0.238 / 0.198 s per 60°, about 1.0 N·m and 275 °/s at the 7.3–7.7 V our battery read (it is a 2-cell pack; "DC 9.6V" in UBTECH's simulation manual is the charger). With the robot's own GetupFront replayed in the sim (`tools/getup_compare.py`), torques of 1.05–1.25 N·m reproduce both robot runs (stands up on a smooth floor, falls forward on the mat, friction 1.4); at 2.0 N·m the sim stood up on any floor. Base_GetupF and GetupRear stand up at every torque in that range, as on the robot. The servos get weaker as the battery runs down, so low-battery runs fail first.
+- **Servo model:** gain 8 N·m/rad, damping and armature are assumptions. UBTECH's own 2018 "walk" keyframes walk in the sim at 400 ms per frame but not at 240 ms, and its "walk back" falls at any gain, so the servo speed/stiffness is where the sim-to-real gap is. Arm choreography and slow poses transfer well; fast balance-critical moves need the measured values first.
 - **The walk:** `SimGait` is a stepping pattern with balance from the torso lean (rate damping and a pitch gain), tuned by `tools/tune_gait.py`: about 19 cm/s at `speed_v 5` with servo targets limited to 300 °/s, upright backward, sideways, diagonally and at every `period` (`tools/gait_tuning.json`). It is not UBTECH's gait (closed source; the only published figure is a vendor's "10 cm/s", the course's example gait uses a 0.8 s sway period), so match `CYCLE`/`STRIDE` to the robot once measured. Stops fade the stride out over `STOP_S` = 1 s: a 0.4 s fade tipped the robot over at full speed, and on the robot the speeds are stepped down `5 → 3 → 1` before `exit_motion_gait`.
-- **IMU:** `get_sensors_gyro()` emulates what the documents say the robot reports: accel in g (right/front/down axes), gyro in deg/s and compass on left/back/up axes, euler in degrees with euler-x ≈ 0 face down, ≈ ±180 on the back and ≈ 90 upright (UBTECH's self-balancing sample uses 91.95 and a backward lean raises it), ~19 Hz sample-and-hold, noise and gyro bias from a published Allan-variance fit. The euler-y sign, the raw axis signs and the compass units are assumptions (`IMU_*` in `robot.py`).
+- **IMU:** `get_sensors_gyro()` emulates what the robot reports, measured on our robot on 29 Oct 2026: euler-x ≈ 92 upright (90 in the sim; it moved by 3° with an app recalibration), + when leaning back, ≈ 0 face down, ≈ ±180 on the back; euler-y + when leaning right; euler-z + after turning left; accel in g and gyro in °/s on the chip axes right/up/back (+1 g on y upright; a left turn is + on gyro-y, leaning back + on gyro-x, leaning right − on gyro-z), gyro bias as measured at rest; 19 Hz sample-and-hold, noise from a published Allan-variance fit. Still assumed: the compass axes and units (`IMU_*` in `robot.py`).
 - **Not simulated:** vision (except colour detection from the rendered head camera), voice, the built-in dances and robot-only built-ins (copy them as `.hts` or record them). The sim's LEDs, built-ins in `motions/builtin/` and the walk are approximations.
-- **Getting up:** the simulated robot cannot get up by itself yet. `tools/tune_getup.py` searched 1,600 symmetric keyframe sequences in the physics and none raised the torso past 80° (the arms are short and the servo model weak), so the Get up button stands the sim up by teleport and says so; the real robot uses its own GetupFront/GetupRear. Rerun the search once the servo constants are measured on hardware.
+- **Getting up (measured on the robot, 29 Oct 2026, `tools/getup_lab.py`):** face down, the firmware's GetupFront pikes to −48° and falls forward on a grippy mat, while on a smooth hard floor it stands the robot up in 13.8 s, following the simulator's trajectory frame for frame; the robot's other front get-up, **Base_GetupF**, stands it up in 6.8 s but ends in a wide crouch, and closing that crouch on a mat stall-locks a hip-roll servo (on a smooth hard floor: no lock, then `reset` stands it straight). On its back **GetupRear** stands it up in 5.5–6.7 s. The simulator reproduces the GetupFront failure with a grippier floor and weaker servos, stands up with the same Base_GetupF and GetupRear (`motions/builtin/getup_front.json`, `getup_rear.json`), and shows the hip rolls at 95–100 % of their torque while the crouch closes. Fast motions must be played by the robot's own engine (`getup_lab.py --engine`): replayed frame by frame over REST every frame starts about 0.2 s late, and GetupRear then rolls over backwards. The firmware's fall management (automatic get-up) only reacts to real falls, uses GetupFront, and its on/off setting did not reach the hal node on our robot; keep it off and use Get up.
 
 **Open questions only the robot can answer** (`docs/ROBOT_SESSION_PLAN.md` steps 2–5)
 - Joint directions, above all the ankle pitch: UBTECH's self-balancing sample corrects a backward lean with `RightAnkleFB −`, `LeftAnkleFB +`, which in the sim leans the torso further back; UBTECH's 2018 walk keyframes agree with the sim's direction. The from-robot mirroring test settles it.
@@ -648,7 +681,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 - The MPU9250 sits in the chest; the DMP's euler-x is 0 face down and ±180 on the back; the course's fall thresholds are |x| < 20 (front) and > 160 (back), and its "−179.5" screenshot is the robot lying on its back.
 - The REST API's default `runtime` is 1000 ms when omitted (YanAPI's is 200); the servo bus counts 0–2048 for 0–180°; servos go limp with a blinking LED when overloaded until a reboot.
 - Yanshee-Serenade's RL walker was never trained to a usable policy or deployed; their real walking is an open-loop IK shuffle at 400 ms per step (~3.3 cm/s) steered by IMU yaw, with servo commands over a ROS TCP bridge because REST was too slow.
-- Nothing published gives servo torque/speed, foot size or the gait's trajectories.
+- Nothing published gives the Yanshee servo's torque, gearing or rotor inertia (only the Alpha 1 Pro's, above), the foot size or the gait's trajectories. No Yanshee CAD (STEP/IGES/SolidWorks) is public on GrabCAD, Thingiverse, Printables, Onshape, Gitee or UBTEDU's GitHub. The sources that exist are downloaded to `external/` (git-ignored, no licences): UBTECH's simulation platform (manual, `.wbo`, `.deb` with the gait headers), Yanshee_ROS, yanshee_moveit's URDF and the Alpha 1 Pro manual.
 
 ---
 

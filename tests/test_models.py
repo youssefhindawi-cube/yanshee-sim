@@ -115,6 +115,29 @@ def test_reset_pose_feet_on_floor():
     assert 0 < low < 0.002, f"lowest vertex at {low * 1000:.2f} mm"
 
 
+def test_link_inertias_are_physical():
+    """Every link's inertia is positive and meets the triangle inequality without MuJoCo balancing it (the Webots
+    source's rotor term is taken off), with a radius of gyration a link of this robot's size can have."""
+    m = mujoco.MjModel.from_xml_path(SCENE)
+    total = 0.0
+    for n in ["base_link", *NAMES]:
+        b = m.body(n).id
+        I, mass = np.sort(m.body_inertia[b]), m.body_mass[b]
+        total += mass
+        assert I[0] > 0 and I[0] + I[1] >= I[2] * (1 - 1e-6), (n, I)
+        assert np.sqrt(I[2] / mass) < 0.05, f"{n}: radius of gyration {np.sqrt(I[2] / mass) * 1000:.0f} mm"
+    assert abs(total - 2.10) < 0.01, total
+
+
+def test_mat_scene_is_the_same_robot_on_a_grippier_floor():
+    from yanshee_sim.robot import SCENE_MAT
+    a, b = mujoco.MjModel.from_xml_path(SCENE), mujoco.MjModel.from_xml_path(SCENE_MAT)
+    fa, fb = a.geom_friction[a.geom("floor").id], b.geom_friction[b.geom("floor").id]
+    assert fa[0] == 1.0 and fb[0] == 1.4 and (fa[1:] == fb[1:]).all()
+    assert a.nbody == b.nbody and np.allclose(a.body_inertia, b.body_inertia)
+    assert np.allclose(a.actuator_forcerange, b.actuator_forcerange)
+
+
 def test_build_models_help_does_not_build():
     out = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_models.py"), "--help"],
                          capture_output=True, text=True, timeout=60)
@@ -337,6 +360,26 @@ def test_sim_leds_paint_the_model():
     bot.close()
 
 
+def test_sim_imu_axes_measured():
+    """Accel and gyro on the chip axes right/up/back (right-hand rule), as measured on the robot 2026-10-29: a turn
+    to the left is + on gyro-y, leaning back + on gyro-x, leaning right - on gyro-z (accel: test_sim_imu_fields)."""
+    import mujoco
+    bot = SimRobot(viewer=False, realtime=False)
+    bot.imu_noise = False
+    bot.wait(0.2)
+    for w, channel, sign in (([0, 0, 1.0], "gyro-y", 1), ([1.0, 0, 0], "gyro-x", 1), ([0, 1.0, 0], "gyro-z", -1)):
+        with bot._lock:
+            mujoco.mj_resetDataKeyframe(bot.model, bot.data, bot._key)
+            bot.data.qvel[:] = 0
+            bot.data.qvel[3:6] = w  # rad/s about world z (turn left), x (lean back), y (lean right)
+            mujoco.mj_forward(bot.model, bot.data)
+            bot._imu_hold = None
+        g = bot.get_sensors_gyro()["data"]["gyro"][0]
+        others = [k for k in ("gyro-x", "gyro-y", "gyro-z") if k != channel]
+        assert sign * g[channel] > 50 and all(abs(g[k]) < 5 for k in others), (w, g)
+    bot.close()
+
+
 def test_sim_imu_fields():
     keys = {"id", "gyro-x", "gyro-y", "gyro-z", "accel-x", "accel-y", "accel-z",
             "compass-x", "compass-y", "compass-z", "euler-x", "euler-y", "euler-z"}
@@ -346,9 +389,9 @@ def test_sim_imu_fields():
         g = bot.get_sensors_gyro()["data"]["gyro"][0]
         assert set(g) == keys and all(type(v) in (int, float) for v in g.values())
         assert 0.95 < math.hypot(g["accel-x"], g["accel-y"], g["accel-z"]) < 1.05, (fixed, g)  # g units
-        assert g["accel-z"] < -0.9, g  # the down axis reads about -1 g upright
+        assert g["accel-y"] > 0.9 and abs(g["accel-z"]) < 0.1, g  # the up axis reads about +1 g upright (measured)
         assert abs(g["euler-x"] - 90) < 5 and abs(g["euler-y"]) < 5 and abs(g["euler-z"]) < 5, g
-        assert abs(g["gyro-x"] + 1.14) < 2 and abs(g["gyro-y"]) < 2 and abs(g["gyro-z"]) < 2, g  # bias + noise
+        assert abs(g["gyro-x"] + 0.85) < 2 and abs(g["gyro-y"] + 0.8) < 2 and abs(g["gyro-z"] - 0.5) < 2, g  # bias + noise
         assert bot.get_sensors_gyro()["data"]["gyro"][0] == g  # held for 1/19 s of sim time
         bot.wait(0.1)
         assert bot.get_sensors_gyro()["data"]["gyro"][0] != g

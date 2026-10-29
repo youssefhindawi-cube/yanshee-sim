@@ -19,6 +19,7 @@ from .servos import IDS, LIMITS, MAX_RUNTIME_MS, MIN_RUNTIME_MS, NAMES, RESET_PO
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENE = os.path.join(ROOT, "model", "scene.xml")
+SCENE_MAT = os.path.join(ROOT, "model", "scene_mat.xml")  # the soft play mat: grippier floor (build_models.MAT_FRICTION)
 SERVO_MODES = ("work", "program")
 LED_COLORS = {"button": ("white", "red", "green", "blue", "yellow", "purple", "cyan"), "camera": ("red", "green", "blue")}
 LED_MODES = {"button": ("on", "off", "blink", "breath"), "camera": ("on", "off", "blink")}
@@ -158,19 +159,25 @@ class Robot:
 
 
 # -- emulated IMU (what the robot's get_sensors_gyro() reports) -----------------------------------------
-# From documents, not yet measured on hardware (README section 13). The MPU9250 sits in the chest; its DMP
-# euler angles are the aerospace roll/pitch/yaw of the chip frame x = robot's right, y = up, z = back: the
-# course lesson on falls shows euler-x about 0 face down and about +-180 on the back, and UBTECH's
-# self-balancing course sample (Yanshee_Self-balancing, self_balance.cpp) takes 91.95 as upright with a
-# backward lean raising it, so IMU_UPRIGHT_EULER_X is +90. Gyro, compass and euler use the axes
-# x = left, y = back, z = up; the accelerometer the opposite axes (right, front, down) (Yanshee-Serenade's
-# driver notes). Units: accel in g, gyro in deg/s, euler in deg, about 19 Hz. Noise densities 0.0164
-# m/s^2/sqrt(Hz) and 0.0014 rad/s/sqrt(Hz) and the gyro bias come from their Allan-variance fit.
+# Measured on our robot on 2026-10-29 (tools/robot_checks.py imu and gyro; robot_dump/imu_20261029_120041.json,
+# gyro_20261029_121453.json, gyro_20261029_121727.json). The MPU9250 in the chest reports on its chip axes
+# x = robot's right, y = up, z = back:
+# - euler: aerospace roll/pitch/yaw of that frame. Upright euler-x 91.9 (88.6 before an app recalibration; the
+#   sim uses 90), leaning back raises it (+20.6 for 20 deg), face down 0.3, on the back 178.9; euler-y +25.0
+#   leaning 25 deg to the right; euler-z is an absolute heading, +89 after a quarter turn left, no drift in 6 min.
+# - accel in g: +1 on y upright, +1 on z face down, -1 on z on the back, -0.44 on x leaning right.
+# - gyro in deg/s, right-hand rule on the same axes: a turn to the left is + on y, leaning back + on x, leaning
+#   right - on z. Bias at rest about (-0.85, -0.8, +0.5) deg/s over six still postures.
+# Yanshee-Serenade's driver notes (gyro on left/back/up, accel on right/front/down) were wrong on every axis
+# here; the compass still follows them (left/back/up, not measured). Rate 19.05 Hz (rostopic hz
+# /hal_gyro_report). The noise densities 0.0164 m/s^2/sqrt(Hz) and 0.0014 rad/s/sqrt(Hz) come from their
+# Allan-variance fit. The course lesson on falls (euler-x about 0 face down, +-180 on the back) and UBTECH's
+# self-balancing sample (91.95 upright, a backward lean raises it) agree with the measurements.
 IMU_RATE_HZ = 19.0
 IMU_UPRIGHT_EULER_X = 90.0
 IMU_ACCEL_SIGMA_G = 0.0164 * math.sqrt(IMU_RATE_HZ) / 9.80665
 IMU_GYRO_SIGMA_DEG_S = math.degrees(0.0014 * math.sqrt(IMU_RATE_HZ))
-IMU_GYRO_BIAS_DEG_S = tuple(math.degrees(b) for b in (-0.01994, -0.00107, 0.00486))
+IMU_GYRO_BIAS_DEG_S = (-0.85, -0.8, 0.5)  # measured at rest on our robot, chip axes
 
 
 class SimRobot(Robot):
@@ -221,6 +228,8 @@ class SimRobot(Robot):
         self._last_time = self.data.time
         self._lock = threading.RLock()
         self._imu_hold, self._imu_rng, self.imu_noise = None, None, True
+        self.mirroring, self._mirror = False, None  # mirror mode: the pose comes from the real robot (set_mirror)
+        self._cmd_t = -1e9  # sim time of the last servo command of its own (mirroring waits MIRROR_HOLDOFF_S after it)
         self.led = {"button": {"color": "blue", "mode": "breath"}, "camera": {"color": "green", "mode": "on"}}
         self.paint_leds(force=True)
         self.manual = manual
@@ -251,6 +260,9 @@ class SimRobot(Robot):
         self._last_time = self.data.time
 
     def _step(self):
+        if self.mirroring and self._mirror is not None:
+            self._mirror_step()
+            return
         t = self.data.time
         if t < self._last_time:  # the viewer reset the data (Backspace): stale move times would replay old moves
             self._restart()
@@ -290,6 +302,9 @@ class SimRobot(Robot):
     def _send(self, angles, runtime):
         with self._lock:
             t = self.data.time
+            if self.mirroring:  # a command of its own: the sim stops showing the robot and moves itself
+                self._end_mirror()
+            self._cmd_t = t
             for n, deg in angles.items():
                 cur = self.data.ctrl[self._act[n]]
                 self._moves[n] = (cur, math.radians(deg), t, t + runtime / 1000)
@@ -404,6 +419,112 @@ class SimRobot(Robot):
             self.data.qvel[:] = 0
             self._mj.mj_forward(self.model, self.data)
 
+    # -- mirror mode: show the real robot, physics paused -------------------------------------------------
+    MIRROR_HOLDOFF_S = 0.5  # set_mirror is ignored this long after the sim's own last servo command
+    MIRROR_UPRIGHT_EULER_X = 92.0  # the real robot's euler-x standing; the sim's emulation uses IMU_UPRIGHT_EULER_X
+
+    def set_mirror(self, angles, euler_x, euler_y, heading=0.0, glide_s=0.25):
+        """Show the real robot: every joint at its encoder reading ({servo: deg}), the body tilted as the robot's IMU
+        says (euler-x about 92 standing, euler-y + leaning right, heading in deg + turned left) and set down so its
+        lowest point touches the floor. Physics is paused while mirroring; the pose glides to the new reading over
+        glide_s. stop_mirror(), or any servo command to the sim, resumes the physics from the mirrored pose.
+        Returns False (ignored) within MIRROR_HOLDOFF_S of the sim's own last servo command."""
+        if not self.mirroring and 0 <= self.data.time - self._cmd_t < self.MIRROR_HOLDOFF_S:
+            return False
+        mj, m = self._mj, self.model
+        import numpy as np
+        r = math.radians(euler_x - self.MIRROR_UPRIGHT_EULER_X + 90.0)
+        p = math.radians(euler_y)
+        up = np.array([-math.sin(p), -math.cos(p) * math.cos(r), math.cos(p) * math.sin(r)])  # world up, site axes
+        R_site = self._tilt_to(up)
+        y0 = math.atan2(-R_site[0, 1], R_site[1, 1])  # the emulation's heading of this tilt alone
+        a = math.radians(heading) - y0
+        Rz = np.array([[math.cos(a), -math.sin(a), 0.0], [math.sin(a), math.cos(a), 0.0], [0.0, 0.0, 1.0]])
+        R_site = Rz @ R_site
+        S = np.zeros(9)
+        mj.mju_quat2Mat(S, m.site_quat[m.site("imu").id])
+        R_base = R_site @ S.reshape(3, 3).T
+        quat = np.zeros(4)
+        mj.mju_mat2Quat(quat, R_base.flatten())
+        with self._lock:
+            q = self.data.qpos.copy()
+            for n, deg in angles.items():
+                if n in self._qadr and _is_number(deg):
+                    q[self._qadr[n]] = math.radians(deg)
+            q[3:7] = quat
+            q[2] = self._floor_height(q)
+            start = self._mirror["now"] if self.mirroring and self._mirror else self.data.qpos.copy()
+            t = self.data.time
+            if not self.mirroring and 0 <= t - self._cmd_t < self.MIRROR_HOLDOFF_S:  # (a respawn restarts the clock)
+                return False
+            self._mirror = {"from": start, "to": q, "t0": t, "t1": t + max(glide_s, 1e-3), "now": start.copy()}
+            self.mirroring = True
+        return True
+
+    @staticmethod
+    def _tilt_to(up):
+        """The world-from-site rotation that takes the site-frame vector `up` to world up, with the least rotation."""
+        import numpy as np
+        u = up / (np.linalg.norm(up) or 1.0)
+        k = np.cross(u, [0.0, 0.0, 1.0])
+        s, c = np.linalg.norm(k), float(u[2])
+        if s < 1e-9:
+            return np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
+        k = k / s
+        K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+        return np.eye(3) + s * K + (1 - c) * (K @ K)
+
+    def _floor_height(self, q):
+        """Base height that puts the lowest point of the robot's collision geoms on the floor (z = 0)."""
+        import numpy as np
+        mj, m = self._mj, self.model
+        d = mj.MjData(m)
+        d.qpos[:] = q
+        d.qpos[2] = 1.0
+        mj.mj_kinematics(m, d)
+        low = 1e9
+        for g in range(m.ngeom):
+            if m.geom_bodyid[g] == 0 or not (m.geom_contype[g] or m.geom_conaffinity[g]):
+                continue
+            R = d.geom_xmat[g].reshape(3, 3)
+            c, half = m.geom_aabb[g][:3], m.geom_aabb[g][3:]
+            low = min(low, (d.geom_xpos[g] + R @ c)[2] - float(np.abs(R[2]) @ half))
+        return 1.0 - low + 0.001
+
+    def _mirror_step(self):
+        import numpy as np
+        mj, d, mi = self._mj, self.data, self._mirror
+        s = min(1.0, max(0.0, (d.time - mi["t0"]) / (mi["t1"] - mi["t0"])))
+        q = mi["from"] + (mi["to"] - mi["from"]) * s
+        qa, qb = mi["from"][3:7], mi["to"][3:7]
+        if float(qa @ qb) < 0:
+            qb = -qb
+        quat = qa + (qb - qa) * s
+        q[3:7] = quat / (np.linalg.norm(quat) or 1.0)
+        mi["now"] = q
+        d.qpos[:] = q
+        d.qvel[:] = 0
+        mj.mj_forward(self.model, d)
+        d.time += self.model.opt.timestep
+        self._last_time = d.time
+        self.paint_leds()
+
+    def stop_mirror(self):
+        """Back to physics from the mirrored pose, every servo holding the angle it shows."""
+        with self._lock:
+            self._end_mirror()
+
+    def _end_mirror(self):  # caller holds self._lock
+        if not self.mirroring:
+            return
+        self.mirroring, self._mirror = False, None
+        self.data.qvel[:] = 0
+        for n in self._act:
+            rad = float(self.data.qpos[self._qadr[n]])
+            self.data.ctrl[self._act[n]] = rad
+            self._moves[n] = (rad, rad, 0.0, 0.0)
+        self._mj.mj_forward(self.model, self.data)
+
     def torso_tilt_deg(self):
         """Angle between the torso's up axis and world up (0 = upright). Useful to detect falls."""
         with self._lock:
@@ -443,7 +564,8 @@ class SimRobot(Robot):
 
     def get_sensors_gyro(self):
         """Emulated IMU in YanAPI's shape and, as far as the documents say, the real robot's frame and units
-        (see IMU_* above): accel in g on right/front/down axes, gyro in deg/s and compass on left/back/up axes,
+        (see IMU_* above): accel in g and gyro in deg/s on the chip axes right/up/back (measured), compass on
+        left/back/up axes (documents),
         euler-x/y/z in deg with euler-x about 0 face down, +-180 on the back and IMU_UPRIGHT_EULER_X upright,
         euler-y the sideways lean (+ = right, assumed) and euler-z the heading (0 = facing model +y, + = turned
         left). Samples are held for 1/IMU_RATE_HZ of sim time and carry noise and gyro bias unless imu_noise is
@@ -466,8 +588,8 @@ class SimRobot(Robot):
         roll = math.degrees(math.atan2(sign * up_c[1], up_c[2]))
         pitch = math.degrees(math.atan2(-up_c[0], math.hypot(up_c[1], up_c[2])))
         yaw = math.degrees(math.atan2(-R[0, 1], R[1, 1]))  # heading of the forward axis, 0 = model +y
-        gyro = np.array([-w[0], -w[1], w[2]]) * (180 / math.pi)  # left, back, up
-        accel = np.array([f[0], f[1], -f[2]]) / 9.80665  # right, front, down, in g
+        gyro = np.array([w[0], w[2], -w[1]]) * (180 / math.pi)  # chip axes right, up, back (measured)
+        accel = np.array([f[0], f[2], -f[1]]) / 9.80665  # chip axes right, up, back, in g (measured)
         comp = np.array([-mag[0], -mag[1], mag[2]])
         if self.imu_noise:
             if self._imu_rng is None:

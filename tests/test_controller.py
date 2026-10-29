@@ -206,8 +206,9 @@ def test_sim_actions_and_cancel():
 
 
 def test_builtin_files_safe_and_upright():
-    """Every sim built-in passes validate and self_collisions and keeps the free-standing sim upright."""
-    files = sorted(f for f in os.listdir(sim_extras.BUILTIN_DIR) if f.endswith(".json"))
+    """Every sim built-in played from standing passes validate and self_collisions and keeps the free-standing sim
+    upright. The get-ups start from lying: test_getup_builtins_are_the_robots."""
+    files = sorted(f for f in os.listdir(sim_extras.BUILTIN_DIR) if f.endswith(".json") and not f.startswith("getup_"))
     expected = {sim_extras.builtin_path(n, d) for n, dirs in sim_extras.SIM_BUILTINS.items() for d in dirs}
     assert {os.path.join(sim_extras.BUILTIN_DIR, f) for f in files} == expected
     checker = motion.CollisionChecker()
@@ -231,6 +232,17 @@ def test_builtin_files_safe_and_upright():
         Watch().wait(1.0)
         sim.close()
         assert tilt[0] < 15, (f, tilt[0])
+
+
+def test_getup_builtins_are_the_robots():
+    """getup_front / getup_rear are the robot's own Base_GetupF and GetupRear (verified on the robot on 29 Oct 2026):
+    every frame sets all 17 servos and validates without errors. Their fast frames and tight leg folds trip the
+    speed and collision checks meant for hand-made motions, so those are not applied; get_up() tests standing up."""
+    for posture, source in (("front", "Base_GetupF"), ("rear", "GetupRear")):
+        mo = sim_extras.load_builtin("getup", posture)
+        assert mo is not None and source in mo["source"], posture
+        assert all(set(fr["angles"]) == set(RESET_POSE) for fr in mo["frames"]), posture
+        assert motion.validate(mo)[0] == [], posture
 
 
 def test_sim_gait_generator_upright():
@@ -406,11 +418,16 @@ def test_gait_turn_and_viewer_keys():
     assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 6)
     assert c._viewer_key(9999) is None  # unknown keys are ignored
     with Connected("robot") as (c2, srv):
-        r = c2.gait(0, 0, steps=0, turn=2)
-        assert r["ok"] is False and "turn around" in r["error"]
-        c2._viewer_key(69)  # E in robot mode plays the built-in turn-around once
-        assert wait_until(lambda: any(e[1] == "motions" and e[3].get("motion", {}).get("name") == "turn around"
-                                      for e in requests(srv, "PUT", "motions")), 5)
+        r = c2.gait(0, 0, steps=0, turn=2, lease_s=1.0)  # AppWalk: the robot turns like the mobile app
+        assert r["ok"], r
+        turns = lambda: [e[3] for e in requests(srv, "PUT", "motions") if (e[3].get("motion") or {}).get("name") == "TurnLeft"]  # noqa: E731
+        assert wait_until(lambda: turns(), 5) and turns()[0]["operation"] == "start_async" and turns()[0]["motion"]["repeat"] == 0
+        assert c2.gait(0, 0, steps=0, turn=2, lease_s=1.0)["updated"]  # held: resent at most every 0.4 s
+        assert wait_until(lambda: c2.state()["activity"]["kind"] == "idle", 6)  # lease ran out: the app's stop
+        stops = [e[3] for e in requests(srv, "PUT", "motions/gait") if e[3].get("period") == 0]
+        assert stops and stops[-1]["speed_v"] == 0 and stops[-1]["speed_h"] == 0
+        c2._viewer_key(69)  # E in robot mode: TurnRight the same way
+        assert wait_until(lambda: any((e[3].get("motion") or {}).get("name") == "TurnRight" for e in requests(srv, "PUT", "motions")), 5)
 
 
 def test_get_up_and_balance():
@@ -434,10 +451,11 @@ def test_get_up_and_balance():
     assert c.sim.torso_tilt_deg() < 15
     assert any("got up" in e["text"] or "stood up" in e["text"] for e in c.events_since(0))
     with Connected("robot") as (c2, srv):
-        r = c2.get_up()  # the fake robot reports euler-x 89.5 (upright) -> |x| < 90 -> GetupFront
-        assert r["ok"], r
-        assert wait_until(lambda: any(e[3].get("motion", {}).get("name") == "GetupFront"
-                                      for e in requests(srv, "PUT", "motions")), 5)
+        r = c2.get_up()  # the fake robot reports euler-x 89.5 (upright) -> |x| < 90 -> face down -> Base_GetupF
+        assert r["ok"] and r["motion"] == "Base_GetupF", r
+        names = lambda: [e[3].get("motion", {}).get("name") or e[3].get("name") for e in requests(srv, "PUT", "motions")]  # noqa: E731
+        assert wait_until(lambda: "Base_GetupF" in names(), 5)
+        assert wait_until(lambda: "reset" in names(), 15), names()  # it ends crouched: reset follows when nothing is locked
 
 
 def test_tip_over_then_get_up():
@@ -476,27 +494,26 @@ def test_gait_direction_changes_do_not_tip():
     assert not c.state()["sim"]["fallen"] and c.sim.torso_tilt_deg() < 15
 
 
-def test_robot_gait_stop_decelerates():
-    """A normal stop steps the robot's walking speeds down before exit_motion_gait; STOP exits at once."""
+def test_robot_gait_stop_like_the_app():
+    """A normal stop is the mobile app's: one gait command with every value 0 (AppWalk); STOP exits at once."""
     with Connected("robot") as (c, srv):
         assert c.gait(5, 2, steps=0)["ok"]
         assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
         srv.state.log.clear()
-        t0 = time.monotonic()
         r = c.gait_stop()
-        assert r["ok"] and r.get("decelerated") and 0.8 < time.monotonic() - t0 < 4, r
-        speeds = [(e[3]["speed_v"], e[3]["speed_h"]) for e in requests(srv, "PUT", "motions/gait")]
-        assert speeds == [(3, 2), (1, 1)], speeds
-        assert requests(srv, "DELETE", "motions/gait") and c.state()["activity"]["kind"] == "idle"
+        assert r["ok"], r
+        sent = [(e[3]["speed_v"], e[3]["speed_h"], e[3]["period"]) for e in requests(srv, "PUT", "motions/gait")]
+        assert sent == [(0, 0, 0)], sent
+        assert not requests(srv, "DELETE", "motions/gait") and c.state()["activity"]["kind"] == "idle"
         assert c.gait(-4, 0, steps=0)["ok"]
         assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
         srv.state.log.clear()
         assert c.stop_all()["ok"]
         assert not requests(srv, "PUT", "motions/gait") and requests(srv, "DELETE", "motions/gait")
-        assert c.gait(1, 0, steps=0)["ok"]  # slow walks need no ramp
+        assert c.gait(1, 0, steps=0)["ok"]
         assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
         srv.state.log.clear()
-        assert c.gait_stop()["ok"] and not requests(srv, "PUT", "motions/gait")
+        assert c.gait_stop()["ok"] and [e[3]["period"] for e in requests(srv, "PUT", "motions/gait")] == [0]
 
 
 def test_robot_mode_gate_twin_and_stop():
@@ -570,7 +587,7 @@ def test_robot_mode_motion_files_gait_music_settings():
         gaits = requests(srv, "PUT", "motions/gait")
         assert gaits[-1][3]["speed_v"] == 3 and gaits[-1][3]["speed_h"] == -1
         assert c.gait_stop()["ok"] and srv.state.gait["status"] == 8
-        assert requests(srv, "DELETE", "motions/gait")
+        assert [e for e in requests(srv, "PUT", "motions/gait") if e[3]["period"] == 0]  # the app's stop
         # music
         ml = c.music_list()
         assert ml["source"] == "robot" and "WakaWaka.mp3" in ml["music"]
@@ -631,8 +648,8 @@ def test_both_mode():
             return abs(sim["RightShoulderFlex"] - robot["RightShoulderFlex"]) <= 15 and sim["RightShoulderFlex"] > 100
         assert wait_until(follows, 4)
         c.stop_all()
-        assert not c._twin_active()
-        r = c.play_motion("wave_right", speed=2)
+        assert c._twin_active()  # idle with a robot connected: the sim mirrors it
+        r = c.play_motion("wave_right", speed=2)  # the sim's own version: it stops mirroring and plays it
         assert r["ok"] and r["target"] == "both"
         assert wait_until(lambda: c.get_servos()["sim"]["RightShoulderFlex"] < 60, 3)
         c.stop_all()
@@ -994,3 +1011,31 @@ if __name__ == "__main__":
             t = time.monotonic()
             fn()
             print("ok", name, f"({time.monotonic() - t:.1f} s)")
+
+
+def test_both_mode_mirrors_the_robot():
+    """With a robot connected the sim mirrors it (encoders and IMU, physics paused), also while walking in Both mode:
+    the robot walks (AppWalk by default) and the sim shows it instead of walking on its own."""
+    with Connected("both") as (c, srv):
+        assert wait_until(lambda: c.sim.mirroring, 5), "the sim does not mirror the connected robot"
+        x0 = float(c.sim.data.qpos[1])
+        assert c.gait(2, 0, steps=0, lease_s=3.0)["ok"]
+        assert wait_until(lambda: any(e[3].get("speed_v") == 2 for e in requests(srv, "PUT", "motions/gait")), 5)
+        time.sleep(1.5)
+        assert c.sim.mirroring and abs(float(c.sim.data.qpos[1]) - x0) < 0.02  # the sim did not walk off by itself
+        st = c.state()
+        assert st["robot"]["walk_method"] == "app" and st["robot"]["mirroring"] is True
+        assert c.gait_stop()["ok"]
+        c.set_mode("sim")
+        assert wait_until(lambda: not c.sim.mirroring, 3), "Sim mode must give the physics back"
+
+
+def test_walk_method_setting():
+    c = ctl()
+    assert c.set_walk_method("jog")["ok"] is False
+    assert c.set_walk_method("sway")["walk_method"] == "sway" and c.walk_method == "sway"
+    assert c.gait(1, 0, steps=0, lease_s=2.0)["ok"]  # sim mode: SwayStep in the sim whatever the robot method
+    assert c.set_walk_method("app")["ok"] is False  # not while walking
+    c.gait_stop()
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    assert c.set_walk_method("app")["ok"] and c.walk_method == "app"

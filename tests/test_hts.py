@@ -31,7 +31,7 @@ def test_layout():
     assert struct.unpack("<I", data[-4:])[0] == 900 + 500 + 460 + 1000  # 20 ms ticks
     f = data[33:66]
     assert f[0] == 0xFB and f[1] == 0xBF and f[2] == hts.KIND_APP and f[3] == 1 and f[32] == 0xED
-    assert struct.unpack("<H", f[4:6])[0] == 4 and struct.unpack("<H", f[6:8])[0] == 0
+    assert struct.unpack("<H", f[4:6])[0] == 4 and struct.unpack("<H", f[6:8])[0] == 1  # app files count from 1
     assert f[8 + NAMES.index("RightShoulderFlex")] == 30 and f[8 + NAMES.index("LeftHipLR")] == 0xFF
     assert f[28] == 40 and (f[29] << 8 | f[30]) == 45 and f[31] == sum(f[2:31]) & 0xFF
     assert data[66 + 3] == 2 and data[99 + 3] == 2 and data[132 + 3] == 3
@@ -114,3 +114,13 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
             print("ok", name)
+
+
+def test_build_reproduces_robot_app_file():
+    """An app-made file copied from the robot (kind 38) round-trips byte for byte, when a robot dump is present."""
+    import glob
+    files = glob.glob(os.path.join(os.path.dirname(HERE), "robot_dump", "inspect_*", "hts", "*__Base_GetupF.hts"))
+    if not files:
+        return
+    raw = open(files[0], "rb").read()
+    assert hts.build(hts.load(files[0])) == raw

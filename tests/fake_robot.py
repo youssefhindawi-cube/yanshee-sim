@@ -296,7 +296,7 @@ def h_motion_list(s, now, q, b):
 def h_motion_control(s, now, q, b):
     op, motion = b.get("operation"), b.get("motion") or {}
     m = s.motion
-    if op == "start":
+    if op in ("start", "start_async"):  # start_async: what the Yanshee mobile app sends (captured 29 Oct 2026)
         if s.refuse:
             return err(1, "refused (fake robot --refuse)")
         if s.battery < 30:
@@ -304,7 +304,7 @@ def h_motion_control(s, now, q, b):
         name, speed, repeat = motion.get("name", ""), motion.get("speed", "normal"), motion.get("repeat", 1)
         if name.lower() not in s.motion_names():
             return err(2, f"motion '{name}' not found")
-        if speed not in SPEED_FACTOR or not isinstance(repeat, int) or repeat < 1:
+        if speed not in SPEED_FACTOR or not isinstance(repeat, int) or repeat < 0:  # 0: the mobile app's turns
             return err(1, "bad speed or repeat")
         total = s.motion_seconds * SPEED_FACTOR[speed] * repeat
         s.motion.update(name=name, status="run", timestamp=b.get("timestamp", 0), start=now, end=now + total,
@@ -549,9 +549,9 @@ def h_sensors_list(s, now, q, b):
 
 def h_gyro(s, now, q, b):
     n = lambda: random.uniform(-0.01, 0.01)  # noqa: E731
-    # upright: accel about -1 g on the down axis, euler-x about 90 (0 would be face down, 180 on the back)
-    return ok({"gyro": [{"id": 1, "gyro-x": n(), "gyro-y": n(), "gyro-z": n(), "accel-x": n(), "accel-y": n(),
-                         "accel-z": -1.0 + n(), "compass-x": 0.2, "compass-y": -0.1, "compass-z": 0.4,
+    # upright, as measured: accel about +1 g on the up (y) axis, euler-x about 92 (0 face down, 180 on the back)
+    return ok({"gyro": [{"id": 1, "gyro-x": n(), "gyro-y": n(), "gyro-z": n(), "accel-x": n(), "accel-y": 1.0 + n(),
+                         "accel-z": n(), "compass-x": 0.2, "compass-y": -0.1, "compass-z": 0.4,
                          "euler-x": 89.5 + n(), "euler-y": 0.3 + n(), "euler-z": 12.0 + n()}]})
 
 

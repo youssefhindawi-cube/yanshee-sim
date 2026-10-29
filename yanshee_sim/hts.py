@@ -6,7 +6,8 @@ four bytes are the total time in ms (little-endian). A frame record is
 
     0xFB 0xBF | kind | position | frames LE16 | index LE16 | 17 angles | 3 reserved | run | total BE16 | sum | 0xED
 
-kind 38 in app and editor files (1 in the 2018 SDK), position 1 first / 2 middle / 3 last, angles in servo
+kind 38 in app and editor files (1 in the 2018 SDK), position 1 first / 2 middle / 3 last, index counted from 1
+in app files (all 93 kind-38 files on our robot, 2026-10-29; SDK files use 0 or 1), angles in servo
 degrees in YanAPI order (servo 1..17, 0xFF = leave that servo alone), run = move time in 20 ms ticks (one
 byte), total = move + wait time in 20 ms ticks, sum = the low byte of the sum of bytes 2..30. The robot
 needs at least 200 ms per frame and the editor says it will not run a frame over 4000 ms.
@@ -90,7 +91,7 @@ def build(motion, kind=KIND_APP):
         rec[0], rec[1], rec[2] = 0xFB, 0xBF, kind
         rec[3] = 1 if i == 0 else 3 if i == len(frames) - 1 else 2
         rec[4:6] = struct.pack("<H", len(frames))
-        rec[6:8] = struct.pack("<H", i)
+        rec[6:8] = struct.pack("<H", i + 1)  # app files count frames from 1
         for k, n in enumerate(NAMES):
             rec[8 + k] = 0xFF if n not in angles else min(max(int(round(angles[n])), 0), 180)
         rec[28] = run

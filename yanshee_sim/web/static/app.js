@@ -257,6 +257,10 @@
     $$("#modeSeg button").forEach((b) => {
       b.setAttribute("aria-checked", String(b.dataset.mode === s.mode));
       b.classList.toggle("na", b.dataset.mode !== "sim" && !s.robot.connected);
+      const ag = $("#autoGetup");
+      if (ag && document.activeElement !== ag) ag.checked = !!s.robot.auto_get_up;
+      const wm = $("#walkMethod");
+      if (wm && document.activeElement !== wm && s.robot.walk_method) wm.value = s.robot.walk_method;
     });
     const r = s.robot || {};
     const dot = $("#robotDot");
@@ -353,8 +357,15 @@
       el.title = `${type === "button" ? "Chest" : "Eye"} LED: ${led.color || "?"}, ${led.mode || "?"}`;
     }
     const r = s.robot || {};
+    const sh = r.shadow;
     $("#robotInfo").textContent = r.connected
-      ? `Robot ${r.ip || ""} ${r.online === false ? "(not answering!)" : "online"}` : "Robot: not connected";
+      ? `Robot ${r.ip || ""} ${r.online === false ? "(not answering!)" : "online"}` +
+        (r.mirroring ? " · sim mirrors it" : "") + (r.link ? " · link" : "") +
+        (sh ? ` · shadow sim ${sh.fallen ? "FELL" : "tilt " + Math.round(sh.tilt) + "°"}` : "")
+      : "Robot: not connected";
+    $("#robotInfo").title = "sim mirrors it: the simulator shows the real robot (encoders + IMU, physics paused). " +
+      "link: the robot link is up (SwayStep, encoders, IMU, hal monitor, firmware logs -> robot_dump/sim2real_*.jsonl). " +
+      "shadow sim: hidden physics fed the robot's own servo frames while it walks; its prediction is logged next to the robot.";
   }
 
   // ------------------------------------------------------------------ walking (hold to walk)
@@ -388,12 +399,8 @@
       return;
     }
     const sp = +$("#walkSpeed").value || 3;
-    if (st && mode() !== "sim") {
-      // the robot's gait cannot turn: a press plays its turn-around built-in once (the twin follows in Both mode)
-      if (!walk.turnFired) { walk.turnFired = true; playAction({ name: "turn around", version: "v1" }, st > 0 ? "left" : "right"); }
-      if (!sv && !sh) { if (walk.active || walk.sent) walkSendStop(); return; }
-    }
-    const body = { speed_v: sv * sp, speed_h: sh * sp, turn: mode() === "sim" ? st * sp : 0, steps: 0,
+    // robot: AppWalk turns with TurnLeft/TurnRight while held; sim: SwayStep pivots; Both: each its own way
+    const body = { speed_v: sv * sp, speed_h: sh * sp, turn: st * sp, steps: 0,
       period: +$("#walkPeriod").value || 1, wave: $("#walkWave").checked };
     const key = JSON.stringify(body);
     if (walk.active && key === walk.lastKey) return;
@@ -450,6 +457,8 @@
   });
   $("#dpadStop").addEventListener("click", () => { walkRelease(); api("POST", "/api/gait/stop"); });
   $("#getupBtn").addEventListener("click", (e) => { walkRelease(); busy(e.currentTarget, () => api("POST", "/api/getup")); });
+  $("#autoGetup").addEventListener("change", (e) => api("POST", "/api/autogetup", { enable: e.currentTarget.checked }));
+  $("#walkMethod").addEventListener("change", (e) => api("POST", "/api/walkmethod", { method: e.currentTarget.value }));
   for (const [id, direction] of [["#tipFront", "front"], ["#tipBack", "back"]]) {
     $(id).addEventListener("click", (e) => {
       if (mode() !== "sim") { toast("Tip over is a simulator test: switch to Sim mode first.", "info"); return; }

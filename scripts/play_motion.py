@@ -17,6 +17,7 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from yanshee_sim import NAMES, RESET_POSE, RealRobot, SimRobot, motion  # noqa: E402
 from yanshee_sim.servos import MAX_RUNTIME_MS, clamp_angles  # noqa: E402
+from yanshee_sim.robot import SCENE, SCENE_MAT  # noqa: E402
 
 FALL_DEG = 45  # torso tilt above this counts as a fall
 RESET_SPEED_DEG_S = 60  # speed of the move to reset on the real robot (before playing and on Ctrl+C)
@@ -71,6 +72,7 @@ def main():
     ap.add_argument("--speed", type=_positive, default=1.0,
                     help="playback speed factor > 0; use 0.5 for first hardware runs")
     ap.add_argument("--fixed", action="store_true", help="simulator: hold the torso in the air (no falling)")
+    ap.add_argument("--mat", action="store_true", help="simulator: on the grippy play mat instead of a smooth floor")
     ap.add_argument("--headless", action="store_true",
                     help="simulator: no window, runs as fast as possible; exit 1 on a fall or self-collision")
     ap.add_argument("--loop", action="store_true", help="simulator: repeat until the window is closed")
@@ -121,7 +123,8 @@ def main():
             sys.exit(f"robot error: {e}")
         return
 
-    bot = SimRobot(viewer=not args.headless, realtime=not args.headless, fixed_base=args.fixed)
+    bot = SimRobot(viewer=not args.headless, realtime=not args.headless, fixed_base=args.fixed,
+                   scene=SCENE_MAT if args.mat else SCENE)
     stop = threading.Event()
     watch = TiltWatch(bot, stop)
     try:

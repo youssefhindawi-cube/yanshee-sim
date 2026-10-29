@@ -125,7 +125,7 @@ class ActionBody(_Body):
 
 class GaitBody(_Body):
     speed_v: int = Field(0, ge=-5, le=5)
-    turn: int = Field(0, ge=-5, le=5)  # + anticlockwise; simulator only (the robot turns with its built-in)
+    turn: int = Field(0, ge=-5, le=5)  # + anticlockwise; sim: SwayStep pivots, robot: AppWalk TurnLeft/TurnRight
     speed_h: int = Field(0, ge=-5, le=5)
     steps: int = Field(0, ge=0, le=10000)
     period: int = Field(1, ge=0, le=5)
@@ -496,6 +496,22 @@ def create_app(controller=None, static_dir=STATIC_DIR, close_controller=None, **
     def tipover(body: TipBody = Body(default=TipBody())):
         """Simulator test: push the robot over gently so Get up can be tried. Refused in robot/both mode."""
         return _reply(ctl().tip_over(body.direction))
+
+    class WalkMethodBody(_Body):
+        method: Literal["app", "sway"] = "app"
+
+    @app.post("/api/walkmethod")
+    def walkmethod(body: WalkMethodBody = Body(default=WalkMethodBody())):
+        """The robot's walk: app = AppWalk (UBTECH's firmware gait, like the mobile app), sway = SwayStep (our gait)."""
+        return _reply(ctl().set_walk_method(body.method))
+
+    class AutoGetupBody(_Body):
+        enable: bool = True
+
+    @app.post("/api/autogetup")
+    def autogetup(body: AutoGetupBody = Body(default=AutoGetupBody())):
+        """Real robot: stand it up by itself after a real fall (recovery.FallDetector)."""
+        return _reply(ctl().set_auto_get_up(body.enable))
 
     @app.post("/api/getup")
     def getup():

@@ -74,6 +74,15 @@ cm/s), keeping `python3 tools/tune_gait.py --check` passing.
 Also note how the robot walks (does it sway, does it lift the feet, step length) and film it from the side
 and front: the sim gait is a guess and can be reshaped to look like the real one.
 
+### 5a. How the mobile app drives the gait (captured 29 Oct 2026, `robot_dump/app_capture/`)
+
+The app uses the same REST API: walking is `PUT /v1/motions/gait` with `speed_v` +-2 (always 2 in the capture),
+`period` 1 and `wave` true, sent once per stick movement; it stops with the same call and every value 0. Left/right on
+its joystick does not side-step: it turns in place with `PUT /v1/motions` (TurnLeft/TurnRight, `operation`
+"start_async", `repeat` 0), resent about every 0.4 s while held, and the robot then plays its own ResetSwitch.
+`tools/joystick.py` drives the robot the same way (side steps behind a checkbox). Capture method: ssh to the robot,
+`rostopic echo -p /gait/goal` and `/rosout` (every motion played is logged), and `sudo tcpdump` on port 9090.
+
 ### 5b. Stopping without tipping over
 
 A walk that is frozen mid-step at speed can tip the robot: in the sim, a 0.4 s fade-out at full speed fell in
@@ -134,6 +143,32 @@ add-on sensors, Bluetooth gamepad, HDMI/USB, energy saving, OTA) and the enduran
 - Put the measured numbers into README section 13 and `docs/ARCHITECTURE.md`, and commit the `robot_dump/`
   JSON files (not the copied `.hts` files unless you want them in the repo).
 - Record the firmware version, the robot's IP and anything surprising in the memory notes for the next session.
+
+## To do
+
+- **Face-down get-up on a mat** (parked 29 Oct 2026): findings, attempts and leads in `docs/GETUP_ON_MATS.md`.
+  Until it is solved the stand needs a smooth hard surface.
+- **IMU balance for the firmware walk** (parked 29 Oct 2026): the built-in walk is open-loop (`gait_node` subscribes
+  only to `/motion_planning_speed` and `/teleopkey`, publishes `/hal_angles_set`; nothing but the REST server reads
+  `/hal_gyro_report`, and its binary has no gyro/IMU/balance strings), and it tips over when switching movements the
+  app's way (a turn starts about 0.2 s after the stop, before the last step ends). To do: sequence the switches in
+  `tools/joystick.py` (wait for the gait to report stopped and the IMU to be steady and upright before a turn or a
+  reversal, and for the turn and its ResetSwitch to end before walking), log the tilt around each switch, and decide
+  whether IMU feedback on top of the firmware walk is worth it once our own gait has been compared.
+
+- **Close the sim-to-real gap** (data collection started 29 Oct 2026): with the robot connected in the GUI the robot
+  logs on board, robot clock (`/home/pi/yanshee_logs/robot_<session>.jsonl`, copied to `robot_dump/robot_logs/`):
+  encoders (hal `/hal_servo_read`, 5 per second), IMU with compass (19 per second), every servo frame on
+  `/hal_angles_set` (the firmware walk's and SwayStep's, ours with the laptop's send time), once a second battery,
+  board temperature, motion status, fall flag and LEDs, the servo calibration offsets, every firmware log line. The
+  laptop logs the shadow simulator (physics fed the same frames) and clock pings (`robot_dump/sim2real_<session>.jsonl`).
+  Link measured 29 Oct: round trip 7 ms, our frames late by 3 ms (95 % 11 ms, max 78 ms). `tools/sim2real_report.py`
+  merges the two and sums up each walk: robot vs shadow tilt and falls, frame-to-encoder delay and error, shadow joints vs encoders. To do: collect
+  walks with both methods on the robot's floor, on battery (not charging: about 0.25 V higher on the charger, so the
+  servos are stronger; logged), then fit the model to them: servo strength and speed per joint (from the delay and
+  error), friction, the IMU filter, and check that the shadow falls when the robot falls and only then.
+  Measured so far: hal ignores the head on `/hal_angles_set`; the encoders read in whole degrees and settle about
+  1 deg short of a streamed target.
 
 ## What this still cannot settle
 

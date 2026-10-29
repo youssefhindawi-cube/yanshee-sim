@@ -1,0 +1,379 @@
+{
+ "params": {
+  "spread9": 0.9941781515464583,
+  "c10": 0.216973807435107,
+  "c11": 0.19260734402833407,
+  "c12": 0.7360117749700269,
+  "c13": 0.6594372956685874,
+  "tR": 2.7461560669720964,
+  "k": 1.0322653059146107,
+  "raise": 11.42754786242488,
+  "alt": 0.3608672237826254,
+  "deep": 9.396217329889492
+ },
+ "result": [
+  [
+   90.66576496358478,
+   16.965510236485514
+  ],
+  [
+   90.69057351946039,
+   6.880060698705222
+  ],
+  [
+   90.5919899187784,
+   24.472013824844566
+  ],
+  [
+   -0.27349800846789124,
+   2.5460097012660867
+  ]
+ ],
+ "frames": [
+  {
+   "angles": {
+    "RightShoulderRoll": 90,
+    "RightShoulderFlex": 97,
+    "RightElbowFlex": 85,
+    "LeftShoulderRoll": 104,
+    "LeftShoulderFlex": 88,
+    "LeftElbowFlex": 85,
+    "RightHipLR": 92,
+    "RightHipFB": 49,
+    "RightKneeFlex": 27,
+    "RightAnkleFB": 142,
+    "RightAnkleUD": 88,
+    "LeftHipLR": 89,
+    "LeftHipFB": 128,
+    "LeftKneeFlex": 150,
+    "LeftAnkleFB": 38,
+    "LeftAnkleUD": 92,
+    "NeckLR": 90
+   },
+   "runtime": 200,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 0,
+    "RightShoulderFlex": 98,
+    "RightElbowFlex": 78,
+    "LeftShoulderRoll": 180,
+    "LeftShoulderFlex": 89,
+    "LeftElbowFlex": 85,
+    "RightHipLR": 92,
+    "RightHipFB": 49,
+    "RightKneeFlex": 27,
+    "RightAnkleFB": 142,
+    "RightAnkleUD": 88,
+    "LeftHipLR": 89,
+    "LeftHipFB": 128,
+    "LeftKneeFlex": 150,
+    "LeftAnkleFB": 38,
+    "LeftAnkleUD": 92,
+    "NeckLR": 90
+   },
+   "runtime": 200,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 5,
+    "RightShoulderFlex": 62,
+    "RightElbowFlex": 179,
+    "LeftShoulderRoll": 167,
+    "LeftShoulderFlex": 121,
+    "LeftElbowFlex": 2,
+    "RightHipLR": 92,
+    "RightHipFB": 49,
+    "RightKneeFlex": 27,
+    "RightAnkleFB": 142,
+    "RightAnkleUD": 88,
+    "LeftHipLR": 89,
+    "LeftHipFB": 128,
+    "LeftKneeFlex": 150,
+    "LeftAnkleFB": 38,
+    "LeftAnkleUD": 92,
+    "NeckLR": 90
+   },
+   "runtime": 200,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 5,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 175,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 90,
+    "RightHipFB": 30,
+    "RightKneeFlex": 5,
+    "RightAnkleFB": 145,
+    "RightAnkleUD": 90,
+    "LeftHipLR": 90,
+    "LeftHipFB": 150,
+    "LeftKneeFlex": 175,
+    "LeftAnkleFB": 35,
+    "LeftAnkleUD": 90,
+    "NeckLR": 89
+   },
+   "runtime": 400,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 5,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 175,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 69,
+    "RightHipFB": 30,
+    "RightKneeFlex": 0,
+    "RightAnkleFB": 158,
+    "RightAnkleUD": 111,
+    "LeftHipLR": 121,
+    "LeftHipFB": 150,
+    "LeftKneeFlex": 173,
+    "LeftAnkleFB": 32,
+    "LeftAnkleUD": 60,
+    "NeckLR": 89
+   },
+   "runtime": 400,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 5,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 175,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 35,
+    "RightHipFB": 63,
+    "RightKneeFlex": 0,
+    "RightAnkleFB": 180,
+    "RightAnkleUD": 138,
+    "LeftHipLR": 141,
+    "LeftHipFB": 155,
+    "LeftKneeFlex": 180,
+    "LeftAnkleFB": 29,
+    "LeftAnkleUD": 36,
+    "NeckLR": 89
+   },
+   "runtime": 400,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 5,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 175,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 35,
+    "RightHipFB": 24,
+    "RightKneeFlex": 32,
+    "RightAnkleFB": 180,
+    "RightAnkleUD": 106,
+    "LeftHipLR": 150,
+    "LeftHipFB": 152,
+    "LeftKneeFlex": 142,
+    "LeftAnkleFB": 0,
+    "LeftAnkleUD": 72,
+    "NeckLR": 89
+   },
+   "runtime": 400,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 5,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 175,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 48,
+    "RightHipFB": 25,
+    "RightKneeFlex": 92,
+    "RightAnkleFB": 144,
+    "RightAnkleUD": 88,
+    "LeftHipLR": 132,
+    "LeftHipFB": 155,
+    "LeftKneeFlex": 90,
+    "LeftAnkleFB": 34,
+    "LeftAnkleUD": 92,
+    "NeckLR": 89
+   },
+   "runtime": 400,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 8,
+    "RightShoulderFlex": 171,
+    "RightElbowFlex": 102,
+    "LeftShoulderRoll": 174,
+    "LeftShoulderFlex": 10,
+    "LeftElbowFlex": 81,
+    "RightHipLR": 10,
+    "RightHipFB": 30,
+    "RightKneeFlex": 80,
+    "RightAnkleFB": 166,
+    "RightAnkleUD": 91,
+    "LeftHipLR": 170,
+    "LeftHipFB": 150,
+    "LeftKneeFlex": 100,
+    "LeftAnkleFB": 19,
+    "LeftAnkleUD": 77,
+    "NeckLR": 89
+   },
+   "runtime": 800,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 14,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 180,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 20,
+    "RightHipFB": 20,
+    "RightKneeFlex": 68,
+    "RightAnkleFB": 165,
+    "RightAnkleUD": 109,
+    "LeftHipLR": 155,
+    "LeftHipFB": 142,
+    "LeftKneeFlex": 98,
+    "LeftAnkleFB": 20,
+    "LeftAnkleUD": 70,
+    "NeckLR": 89
+   },
+   "runtime": 2746,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 14,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 180,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 46,
+    "RightHipFB": 29,
+    "RightKneeFlex": 40,
+    "RightAnkleFB": 150,
+    "RightAnkleUD": 129,
+    "LeftHipLR": 134,
+    "LeftHipFB": 151,
+    "LeftKneeFlex": 142,
+    "LeftAnkleFB": 30,
+    "LeftAnkleUD": 51,
+    "NeckLR": 89
+   },
+   "runtime": 1648,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 14,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 180,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 76,
+    "RightHipFB": 20,
+    "RightKneeFlex": 10,
+    "RightAnkleFB": 125,
+    "RightAnkleUD": 108,
+    "LeftHipLR": 104,
+    "LeftHipFB": 151,
+    "LeftKneeFlex": 170,
+    "LeftAnkleFB": 30,
+    "LeftAnkleUD": 72,
+    "NeckLR": 89
+   },
+   "runtime": 1098,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 14,
+    "RightShoulderFlex": 180,
+    "RightElbowFlex": 90,
+    "LeftShoulderRoll": 180,
+    "LeftShoulderFlex": 0,
+    "LeftElbowFlex": 95,
+    "RightHipLR": 86,
+    "RightHipFB": 28,
+    "RightKneeFlex": 10,
+    "RightAnkleFB": 137,
+    "RightAnkleUD": 97,
+    "LeftHipLR": 96,
+    "LeftHipFB": 150,
+    "LeftKneeFlex": 170,
+    "LeftAnkleFB": 37,
+    "LeftAnkleUD": 86,
+    "NeckLR": 89
+   },
+   "runtime": 2197,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 90,
+    "RightShoulderFlex": 140,
+    "RightElbowFlex": 165,
+    "LeftShoulderRoll": 90,
+    "LeftShoulderFlex": 40,
+    "LeftElbowFlex": 15,
+    "RightHipLR": 92,
+    "RightHipFB": 44,
+    "RightKneeFlex": 18,
+    "RightAnkleFB": 142,
+    "RightAnkleUD": 88,
+    "LeftHipLR": 89,
+    "LeftHipFB": 133,
+    "LeftKneeFlex": 159,
+    "LeftAnkleFB": 38,
+    "LeftAnkleUD": 92,
+    "NeckLR": 90
+   },
+   "runtime": 600,
+   "hold": 0
+  },
+  {
+   "angles": {
+    "RightShoulderRoll": 90,
+    "RightShoulderFlex": 140,
+    "RightElbowFlex": 165,
+    "LeftShoulderRoll": 90,
+    "LeftShoulderFlex": 40,
+    "LeftElbowFlex": 15,
+    "RightHipLR": 90,
+    "RightHipFB": 60,
+    "RightKneeFlex": 76,
+    "RightAnkleFB": 110,
+    "RightAnkleUD": 90,
+    "LeftHipLR": 90,
+    "LeftHipFB": 120,
+    "LeftKneeFlex": 104,
+    "LeftAnkleFB": 70,
+    "LeftAnkleUD": 90,
+    "NeckLR": 90
+   },
+   "runtime": 1200,
+   "hold": 0
+  }
+ ]
+}

@@ -104,10 +104,13 @@
             </div>
             <div class="dpad-extra">
               <div class="turns" aria-label="Hold to rotate in place">
-                <button type="button" class="btn" data-dir="tl" aria-label="Rotate anticlockwise (hold, or key Q)" title="Hold to rotate anticlockwise (key Q). In the simulator it pivots slowly; on the robot a press plays its turn-around motion.">&#8634; Rotate</button>
-                <button type="button" class="btn" data-dir="tr" aria-label="Rotate clockwise (hold, or key E)" title="Hold to rotate clockwise (key E). In the simulator it pivots slowly; on the robot a press plays its turn-around motion.">Rotate &#8635;</button>
+                <button type="button" class="btn" data-dir="tl" aria-label="Rotate anticlockwise (hold, or key Q)" title="Hold to rotate anticlockwise (key Q). Simulator: SwayStep pivots; robot: AppWalk plays TurnLeft while held, like the mobile app.">&#8634; Rotate</button>
+                <button type="button" class="btn" data-dir="tr" aria-label="Rotate clockwise (hold, or key E)" title="Hold to rotate clockwise (key E). Simulator: SwayStep pivots; robot: AppWalk plays TurnRight while held, like the mobile app.">Rotate &#8635;</button>
               </div>
-              <button type="button" class="btn primary getup" id="getupBtn" title="After a fall: the robot plays GetupFront or GetupRear by its IMU; the simulator plays its own get-up motion and is stood up if that fails">&#11014; Get up</button>
+              <button type="button" class="btn primary getup" id="getupBtn" title="After a fall, by the IMU: face down Base_GetupF then reset, on its back GetupRear (robot and simulator)">&#11014; Get up</button>
+              <label class="hint" title="Real robot: after a real fall (not when it is laid down by hand) stop walking and play Get up by itself"><input type="checkbox" id="autoGetup"> Auto get-up</label>
+              <label class="hint" title="How the real robot walks. App: UBTECH's onboard gait, the mobile app's way. Sway: our SwayStep gait, streamed to the robot 50 times a second. The simulator mirrors the robot either way.">Robot walk
+                <select id="walkMethod"><option value="app">App (firmware)</option><option value="sway">Sway (ours)</option></select></label>
               <div class="turns" aria-label="Simulator fall test">
                 <button type="button" class="btn" id="tipFront" title="Simulator only: a gentle push at the head tips it forward, to test fall detection and Get up">Tip over &#9660; front</button>
                 <button type="button" class="btn" id="tipBack" title="Simulator only: a gentle push at the head tips it backward">Tip over &#9650; back</button>

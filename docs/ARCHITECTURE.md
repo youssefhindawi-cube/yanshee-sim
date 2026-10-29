@@ -166,7 +166,7 @@ a thread pool, never on the event loop.
 | POST | `/api/action/pause` / `/api/action/resume` | | Pause / resume the robot built-in that is playing |
 | POST | `/api/gait` | `{speed_v, speed_h, turn, steps, period, wave, lease}` | Walk. `steps=0` is a dead-man lease: it stops unless `/api/gait` or `/api/gait/keepalive` arrives within `lease` s (default 1.5, 0.5-10). `turn` −5..5 (+ anticlockwise) rotates in place, simulator only; the robot refuses it (its "turn around" built-in is the way) |
 | POST | `/api/gait/keepalive` | | Refresh the walk's lease; returns `{walking}` |
-| POST | `/api/getup` | | Stand up after a fall: robot GetupFront/GetupRear by its IMU; sim its get-up motion, or respawn |
+| POST | `/api/getup` | | Stand up after a fall, by the IMU: robot Base_GetupF + reset (face down; reset only when no servo is stall-locked) or GetupRear (on its back); sim the same motions, respawn if still down |
 | POST | `/api/tipover` | `{direction: front|back|left|right}` | Simulator test: a gentle push at the head (9 N, 0.5 s) tips the robot over; refused in robot/both mode |
 | POST | `/api/gait/stop` | | |
 | GET | `/api/music` | | Music list |
@@ -262,7 +262,7 @@ Balance: `SimRobot.balance()` (capture point vs support circle) is sampled by th
 (stride first, stepping after, ankle balance at full gain throughout), winds the stride down when the margin
 exceeds 3.5 cm, and places the swing foot towards the capture point. With nothing held (`steps=0`, all speeds 0) the
 sim stands in its crouch instead of stepping in place (stepping after a walk used to spin it slowly). `Controller.get_up()` and `/api/getup`
-stand the robot up after a fall (sim: `motions/builtin/getup_*.json` if present, else `respawn()`). Walking always stops on release, pointer leave/cancel, window blur and page hide; while a
+stand the robot up after a fall (`Controller.ROBOT_GETUP`; sim: `motions/builtin/getup_*.json`, the robot's own Base_GetupF and GetupRear, `respawn()` only if it is still down). Walking always stops on release, pointer leave/cancel, window blur and page hide; while a
 direction is held the page sends `/api/gait/keepalive` every 0.4 s, so a lost tablet stops the walk within 1.5 s. A gait
 request that got no answer is followed by a stop, and release sends a stop whenever a gait request went out without a
 confirmed stop since. While the WebSocket is down the page polls `/api/state` every second and shows a banner 1.5 s
