@@ -225,6 +225,7 @@ class SimRobot(Robot):
         self._modes = {n: "work" for n in NAMES}
         # per actuator: (start rad, end rad, t_start, t_end)
         self._moves = {n: (self.data.ctrl[i], self.data.ctrl[i], 0.0, 0.0) for n, i in self._act.items()}
+        self._offsets = {}  # servo -> rad added to its command on top of its move (set_offsets: balance)
         self._last_time = self.data.time
         self._lock = threading.RLock()
         self._imu_hold, self._imu_rng, self.imu_noise = None, None, True
@@ -246,8 +247,15 @@ class SimRobot(Robot):
 
     # -- physics --------------------------------------------------------------
     def _hold(self):
-        """Cancel all moves: every servo holds its current target."""
+        """Cancel all moves: every servo holds its current target (offsets included, then cleared)."""
         self._moves = {n: (self.data.ctrl[i], self.data.ctrl[i], 0.0, 0.0) for n, i in self._act.items()}
+        self._offsets = {}
+
+    def set_offsets(self, offsets):
+        """{servo: deg} added to the servos' commands on top of their moves (balance corrections); {} for none."""
+        rad = {n: math.radians(d) for n, d in offsets.items() if n in self._act and d}
+        with self._lock:
+            self._offsets = rad
 
     def _restart(self):
         """Back to the reset keyframe (standing, all servos working)."""
@@ -267,9 +275,10 @@ class SimRobot(Robot):
         if t < self._last_time:  # the viewer reset the data (Backspace): stale move times would replay old moves
             self._restart()
             t = self.data.time
+        off = self._offsets
         for n, (a, b, t0, t1) in ({} if self.manual else self._moves).items():
             s = 1.0 if t >= t1 else max(0.0, (t - t0) / (t1 - t0))
-            self.data.ctrl[self._act[n]] = a + (b - a) * s  # linear profile, like the servo's timed move
+            self.data.ctrl[self._act[n]] = a + (b - a) * s + off.get(n, 0.0)  # linear profile, like the servo's timed move
         self._mj.mj_step(self.model, self.data)
         self._last_time = self.data.time
         self.paint_leds()
@@ -306,7 +315,7 @@ class SimRobot(Robot):
                 self._end_mirror()
             self._cmd_t = t
             for n, deg in angles.items():
-                cur = self.data.ctrl[self._act[n]]
+                cur = self.data.ctrl[self._act[n]] - self._offsets.get(n, 0.0)
                 self._moves[n] = (cur, math.radians(deg), t, t + runtime / 1000)
         return {"code": 0, "data": {n: True for n in angles}, "msg": "success"}
 

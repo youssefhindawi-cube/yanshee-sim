@@ -3,10 +3,10 @@
   <compiler angle="radian" meshdir="meshes" autolimits="true"/>
   <option timestep="0.002" integrator="implicitfast"/>
   <default>
-    <joint damping="0.08" armature="0.002" frictionloss="0.01"/>
+    <joint damping="0.12" armature="0.002" frictionloss="0.08"/>
     <position kp="8.0" forcerange="-1.15 1.15"/>
     <default class="visual"><geom type="mesh" contype="0" conaffinity="0" group="2" mass="0"/></default>
-    <default class="collision"><geom type="mesh" group="3" rgba="0.8 0.3 0.3 0.4" mass="0" contype="1" conaffinity="0" condim="3" friction="1.0 0.02 0.001"/></default>
+    <default class="collision"><geom type="mesh" group="3" rgba="0.8 0.3 0.3 0.4" mass="0" contype="1" conaffinity="0" condim="3" friction="0.7 0.02 0.001"/></default>
   </default>
   <asset>
     <material name="c0" rgba="0.1 0.1 0.1 1" specular="0.4" shininess="0.6"/>

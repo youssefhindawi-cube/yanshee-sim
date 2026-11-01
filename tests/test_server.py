@@ -579,11 +579,22 @@ def test_getup_route():
 def test_gait_turn_param():
     client, c = setup()
     refused(client.post("/api/gait", json={"turn": 7}), 400)
+    c.sim.respawn()  # TurnRight from standing (the get-up test before leaves it mid-way; from there it may tip)
+    time.sleep(0.5)
     ok(client.post("/api/gait", json={"speed_v": 0, "turn": -3, "lease": 2}))
     assert wait_until(lambda: "clockwise" in client.get("/api/state").json()["activity"]["detail"], 5)
     ok(client.post("/api/gait/stop"))
     assert wait_until(lambda: client.get("/api/state").json()["activity"]["kind"] == "idle", 8)
     c.reset()
+
+
+def test_balance_endpoint():
+    client, c = setup()
+    r = ok(client.post("/api/balance", json={"enable": True}))
+    assert r["balance"] is True and r["robot"].startswith("off")
+    assert client.get("/api/state").json()["robot"]["balance"] is True
+    refused(client.post("/api/balance", json={"enable": "maybe"}), 400)
+    assert ok(client.post("/api/balance", json={"enable": False}))["balance"] is False
 
 
 def test_robot_extras_pause_tts_stop_photo_resolution():

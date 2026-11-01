@@ -6,7 +6,8 @@
   (ours with the laptop's send time), hal's monitor, firmware log lines. Copied on disconnect, or with
   tools/fetch_robot_logs.py.
 
-The robot's times are moved to the laptop clock with the offset from the quickest clock pings, then per walk (AppWalk
+The robot's times are moved to the laptop clock with the offset from the quickest clock pings, followed through the
+session (the robot's clock drifts: 45 ms in 24 min on 29 Oct 2026, its time service correcting it), then per walk (AppWalk
 or SwayStep): duration, frames (the firmware's or ours), the robot's tilt (IMU) against the shadow simulator's, who
 fell, the delay from a frame to the encoders reaching it and the error left, the shadow's joints against the
 encoders; then how late our frames reached the robot over the link, battery, temperature, firmware warnings.
@@ -30,6 +31,7 @@ from yanshee_sim.servos import NAMES  # noqa: E402
 
 UPRIGHT_EULER_X = 92.0
 LAGS_MS = range(0, 420, 20)
+CLOCK_WINDOW_S = 120.0  # clock_track: one offset per this many seconds of pings
 
 
 def tilt(ex, ey):
@@ -78,11 +80,40 @@ def clock_offset(rows):
     return statistics.median(o for _, o in best), pings
 
 
+def clock_track(rows):
+    """[(laptop time, robot clock minus laptop clock)] per CLOCK_WINDOW_S of pings, from the quickest third of each;
+    windows whose quickest ping is much slower than the session's are left out (unless all are)."""
+    pings = sorted((r["t"], r["rtt"], r["offset"]) for r in rows if r["kind"] == "clock" and "t" in r)
+    wins, i = [], 0
+    while i < len(pings):
+        j = i
+        while j < len(pings) and pings[j][0] < pings[i][0] + CLOCK_WINDOW_S:
+            j += 1
+        w = sorted(pings[i:j], key=lambda p: p[1])
+        wins.append((statistics.median(p[0] for p in w), w[0][1], statistics.median(p[2] for p in w[:max(1, len(w) // 3)])))
+        i = j
+    if not wins:
+        return []
+    fast = min(w[1] for w in wins) * 3 + 0.01
+    return [(t, o) for t, rtt, o in wins if rtt <= fast] or [(t, o) for t, _, o in wins]
+
+
+def offset_at(track, t):
+    """The offset at laptop time t, interpolated between the windows of clock_track and carried on past the first
+    and last (0 without pings)."""
+    if len(track) < 2:
+        return track[0][1] if track else 0.0
+    k = min(max(bisect.bisect_left(track, (t,)), 1), len(track) - 1)
+    (t0, o0), (t1, o1) = track[k - 1], track[k]
+    return o0 + (o1 - o0) * (t - t0) / (t1 - t0)
+
+
 def load(path):
     """Laptop rows plus the robot's rows moved to the laptop clock (kind from the robot's 'k')."""
     rows = [json.loads(line) for line in open(path) if line.strip()]
     link = next((r for r in rows if r["kind"] == "link"), None)
     off, pings = clock_offset(rows)
+    track = clock_track(rows)
     robot_path, robot_rows = None, []
     if link and link.get("robot_log"):
         robot_path = os.path.join(os.path.dirname(os.path.abspath(path)), "robot_logs", os.path.basename(link["robot_log"]))
@@ -93,7 +124,7 @@ def load(path):
                 except ValueError:
                     continue  # a line cut short when the robot lost power
                 r["kind"], r["rt"] = r.pop("k"), r["t"]
-                r["t"] = r["t"] - (off or 0.0)
+                r["t"] = r["t"] - offset_at(track, r["t"] - (off or 0.0))
                 if r["kind"] == "frame":
                     r["angles"] = {n: u * 360.0 / 4096 for n, u in zip(NAMES, r["c"]) if u != 65535}
                 robot_rows.append(r)
@@ -118,8 +149,11 @@ def main():
              f"MISSING ({robot_path or 'no link in this session'}): run tools/fetch_robot_logs.py --ip IP"))
     if pings:
         rtts = [p[0] * 1000 for p in pings]
+        offs = [o for _, o in clock_track(rows)]
+        drift = max(offs) - min(offs) if offs else 0.0
         print(f"clock: robot - laptop = {off * 1000:+.0f} ms from {len(pings)} pings (round trip median {statistics.median(rtts):.0f} ms, "
-              f"95% {pct(rtts, 0.95):.0f} ms, max {max(rtts):.0f} ms)")
+              f"95% {pct(rtts, 0.95):.0f} ms, max {max(rtts):.0f} ms)"
+              + (f", drifting {drift * 1000:.0f} ms over the session (followed)" if drift >= 0.002 else ""))
     ours = [r for r in by["frame"] if r.get("src") == "ours" and "lt" in r]
     if ours:
         delay = [(r["t"] - r["lt"]) * 1000 for r in ours]

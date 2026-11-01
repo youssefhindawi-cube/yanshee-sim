@@ -77,7 +77,7 @@ Per-instance client for the robot's REST API.
 | `SimRenderer(sim, width=640, height=480, fps=12)` | Owns one MuJoCo `Renderer` in its own thread. Copies `MjData` under the sim lock, renders outside it, and keeps the latest JPEG for named cameras: `head_camera` (FPV), `front`, `side`, `free` (orbit). `latest(cam)` returns JPEG bytes. Uses EGL when there is no display. |
 | LEDs | Chest and eye LED markers (sites or geoms added via `MjSpec` at load, no rebuild). Colour and mode (on / off / blink / breath) are animated in the renderer. |
 | Sim built-ins | Approximate keyframe files in `motions/builtin/` for the parametric built-ins: `raise`, `wave`, `stretch`, `come on` (left/right/both), `bend` (left/right), `head` (forward/left/right), `bow`, `crouch`, `reset`. Each is tested to keep the robot upright. File name: `NAME_DIRECTION.json` with spaces as `_`, e.g. `come_on_left.json`. |
-| Sim gait | A stepping generator (`SimGait`) driven by `speed_v`/`speed_h`/`steps`/`period`, with ankle balance feedback from the simulated IMU; its constants are tuned by `tools/tune_gait.py`. It must not make the robot fall in sim; if real walking is not stable, step in place and say so in the activity text. |
+| Sim gait | AppWalk (`yanshee_sim/appwalk.py`): the robot's firmware walk played back from frames recorded on the robot (`model/appwalk.json`, `tools/extract_appwalk.py`): start, looped step cycle, the firmware's stop (finish the step, wind down, five 100 ms frames to stand), TurnLeft/TurnRight looped while held and ResetSwitch on release. Directions not recorded are refused. SwayStep (`SimGait`, our own stepping generator with ankle balance, tuned by `tools/tune_gait.py`) is archived: `YANSHEE_ALLOW_SWAY=1` and walk method `sway`. |
 | Built-ins with no sim version | In `sim` mode: "not available in simulation". In `both`: twin-follow. |
 | Sim battery | Starts at 100% and drains slowly with actuator effort. `charge()` resets it. |
 
@@ -120,7 +120,7 @@ ctl.close()                                # stop the activity, renderer and twi
 Return details: every method returns a dict with `"ok"`, except `list_actions()` and `motion_files()` (lists) and
 `photo()` (JPEG bytes, or `{"ok": False, "error"}`). `gait`: `speed_h > 0` steps to the robot's left; `period=0` stops.
 `set_servos` refusals carry `blocked: [[body, body], ...]`; `play_motion` refusals carry `errors`, `warnings`, `collisions`.
-`gait_stop()` stops gently: the sim fades its stride out over `SimGait.STOP_S` (1 s), a robot walk is stepped down
+`gait_stop()` stops gently: the sim finishes its step and stands up as the firmware does (AppWalk), a robot walk is stepped down
 `5 → 3 → 1` (0.5 s apart) before `exit_motion_gait` (`rest.gait_decelerate`), because an exit at speed can tip the robot;
 a connected robot always gets `gait_exit` whatever the mode. Only STOP (`stop_all`) exits at once. `set_servo_mode("program")`
 on robot leg servos adds a warning (the robot cannot stand). In `check_motion`, `collisions[].frame` is 0-based
@@ -258,7 +258,7 @@ with a 0.9 s lease that every repeat renews, so releasing the key stops the walk
 LEDs: `SimRobot.paint_leds()` writes the LED colours and glow into the shared model (`geom_rgba`, `mat_emission`)
 every 20 ms of sim time and on every `set_led`, so the viewer window and the offscreen cameras render identical LEDs.
 Balance: `SimRobot.balance()` (capture point vs support circle) is sampled by the monitor and exposed as
-`state.sim.balance_margin_cm`; `SimGait` ramps every direction change over 2 s, stops with a two-stage 1.5 s fade
+`state.sim.balance_margin_cm`; the archived `SimGait` (SwayStep) ramps every direction change over 2 s, stops with a two-stage 1.5 s fade
 (stride first, stepping after, ankle balance at full gain throughout), winds the stride down when the margin
 exceeds 3.5 cm, and places the swing foot towards the capture point. With nothing held (`steps=0`, all speeds 0) the
 sim stands in its crouch instead of stepping in place (stepping after a walk used to spin it slowly). `Controller.get_up()` and `/api/getup`

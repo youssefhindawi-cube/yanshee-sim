@@ -55,8 +55,12 @@ def spec_hook(args):
             if j.type == mujoco.mjtJoint.mjJNT_HINGE:
                 if args.armature is not None:
                     j.armature = args.armature
-                if args.damping is not None:
-                    j.damping = args.damping
+                if args.frictionloss is not None:
+                    j.frictionloss = args.frictionloss
+                if args.damping is not None:  # MuJoCo 3.8: joint damping is an array (its first value is the linear term)
+                    d = np.array(j.damping, dtype=float).reshape(-1)
+                    d[0] = args.damping
+                    j.damping = d
         for a in spec.actuators:
             if args.torque is not None:
                 a.forcerange = [-args.torque, args.torque]
@@ -98,6 +102,7 @@ def main(argv=None):
     ap.add_argument("--kp", type=float, help="servo position gain, N*m/rad")
     ap.add_argument("--armature", type=float, help="servo reflected rotor inertia, kg*m^2")
     ap.add_argument("--damping", type=float, help="joint damping, N*m*s/rad")
+    ap.add_argument("--frictionloss", type=float, help="joint Coulomb friction, N*m")
     ap.add_argument("--trace", action="store_true", help="print both euler-x traces every 0.5 s")
     args = ap.parse_args(argv)
     d, rt, rx = robot_trace(args.log)

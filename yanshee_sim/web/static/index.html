@@ -104,27 +104,21 @@
             </div>
             <div class="dpad-extra">
               <div class="turns" aria-label="Hold to rotate in place">
-                <button type="button" class="btn" data-dir="tl" aria-label="Rotate anticlockwise (hold, or key Q)" title="Hold to rotate anticlockwise (key Q). Simulator: SwayStep pivots; robot: AppWalk plays TurnLeft while held, like the mobile app.">&#8634; Rotate</button>
-                <button type="button" class="btn" data-dir="tr" aria-label="Rotate clockwise (hold, or key E)" title="Hold to rotate clockwise (key E). Simulator: SwayStep pivots; robot: AppWalk plays TurnRight while held, like the mobile app.">Rotate &#8635;</button>
+                <button type="button" class="btn" data-dir="tl" aria-label="Rotate anticlockwise (hold, or key Q)" title="Hold to rotate anticlockwise (key Q). AppWalk: plays TurnLeft while held, like the mobile app (the simulator plays the robot's copy).">&#8634; Rotate</button>
+                <button type="button" class="btn" data-dir="tr" aria-label="Rotate clockwise (hold, or key E)" title="Hold to rotate clockwise (key E). AppWalk: plays TurnRight while held, like the mobile app (the simulator plays the robot's copy). With Balance on the robot, the robot link plays it there with the balance.">Rotate &#8635;</button>
               </div>
-              <button type="button" class="btn primary getup" id="getupBtn" title="After a fall, by the IMU: face down Base_GetupF then reset, on its back GetupRear (robot and simulator)">&#11014; Get up</button>
+              <button type="button" class="btn primary getup" id="getupBtn" title="After a fall, by the IMU: face down Base_GetupF then reset, on its back GetupRear (robot and simulator); ends in the reset pose like the Reset button, stepping a splayed leg back in">&#11014; Get up</button>
               <label class="hint" title="Real robot: after a real fall (not when it is laid down by hand) stop walking and play Get up by itself"><input type="checkbox" id="autoGetup"> Auto get-up</label>
-              <label class="hint" title="How the real robot walks. App: UBTECH's onboard gait, the mobile app's way. Sway: our SwayStep gait, streamed to the robot 50 times a second. The simulator mirrors the robot either way.">Robot walk
-                <select id="walkMethod"><option value="app">App (firmware)</option><option value="sway">Sway (ours)</option></select></label>
+              <label class="hint" id="balanceLabel" title="IMU balance: ankle corrections from the torso's lean on top of AppWalk. Simulator: walks and turns. Robot: walks and turns (the turns then played by the robot link on the robot), once tools/robot_checks.py balance has checked the ankle and IMU signs."><input type="checkbox" id="balance"> Balance</label>
+              <span class="hint" title="Robot and simulator walk with UBTECH's onboard gait, driven the mobile app's way (AppWalk); the simulator plays back the robot's recorded walk (model/appwalk.json), so directions not recorded yet are refused in Sim mode.">Walk: AppWalk</span>
               <div class="turns" aria-label="Simulator fall test">
                 <button type="button" class="btn" id="tipFront" title="Simulator only: a gentle push at the head tips it forward, to test fall detection and Get up">Tip over &#9660; front</button>
                 <button type="button" class="btn" id="tipBack" title="Simulator only: a gentle push at the head tips it backward">Tip over &#9650; back</button>
               </div>
             </div>
             <div class="walk-side">
-              <label class="field">Speed <output id="walkSpeedOut">3</output>
+              <label class="field" title="The robot's walking speed. The simulator walks at the speed the robot was recorded at.">Speed <output id="walkSpeedOut">3</output>
                 <input type="range" id="walkSpeed" min="1" max="5" step="1" value="3">
-              </label>
-              <label class="field">Step period
-                <select id="walkPeriod">
-                  <option value="1" selected>1 (quick)</option><option value="2">2</option><option value="3">3</option>
-                  <option value="4">4</option><option value="5">5 (slow)</option>
-                </select>
               </label>
               <label class="switch" title="Swing the arms while walking (robot gait)"><input type="checkbox" id="walkWave"><span></span>Arm swing</label>
               <p class="hint">Hold to walk, release to stop (the walk also stops by itself if this page loses the server for 1.5 s). Keys from any tab: arrows or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk, <kbd>Q</kbd>/<kbd>E</kbd> rotate, <kbd>Esc</kbd> stops everything. The same keys work in the MuJoCo window when the server runs with <code>--viewer</code> (<kbd>X</kbd> or <kbd>Esc</kbd> there is STOP).</p>

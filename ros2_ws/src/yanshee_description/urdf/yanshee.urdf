@@ -127,119 +127,119 @@
     <origin xyz="0.0538395 0.0105513 0.302344" rpy="1.57 -0 -0"/>
     <axis xyz="-1 0 0"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightShoulderFlex" type="revolute">
     <parent link="RightShoulderRoll_link"/><child link="RightShoulderFlex_link"/>
     <origin xyz="0.0230556 -0.00120768 -0.00279554" rpy="-3.14147 -0.701593 3.14125"/>
     <axis xyz="0.000147206 1 1.30023e-07"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightElbowFlex" type="revolute">
     <parent link="RightShoulderFlex_link"/><child link="RightElbowFlex_link"/>
     <origin xyz="0.0411305 -0.000255519 -0.0471044" rpy="-3.14155 -0.271593 3.14129"/>
     <axis xyz="0.000147206 1 1.30023e-07"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftShoulderRoll" type="revolute">
     <parent link="torso_link"/><child link="LeftShoulderRoll_link"/>
     <origin xyz="-0.0538663 0.0114651 0.301204" rpy="-1.57 -0 0"/>
     <axis xyz="1 0 0"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftShoulderFlex" type="revolute">
     <parent link="LeftShoulderRoll_link"/><child link="LeftShoulderFlex_link"/>
     <origin xyz="-0.0229143 -2.23978e-06 -6.63678e-06" rpy="0.000158253 -0.7 -5.77847e-05"/>
     <axis xyz="-0.000187875 1 2.46751e-08"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftElbowFlex" type="revolute">
     <parent link="LeftShoulderFlex_link"/><child link="LeftElbowFlex_link"/>
     <origin xyz="-0.0390682 -0.00125681 -0.0455804" rpy="5.03823e-05 -0.262 -6.6446e-06"/>
     <axis xyz="-0.000187875 1 2.46751e-08"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightHipLR" type="revolute">
     <parent link="torso_link"/><child link="RightHipLR_link"/>
     <origin xyz="0.0285146 -0.00180378 0.221984" rpy="0 -1.57 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="0" upper="2.0944" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightHipFB" type="revolute">
     <parent link="RightHipLR_link"/><child link="RightHipFB_link"/>
     <origin xyz="4.51266e-05 0.000325669 -0.0440546" rpy="1.05 -7.54015e-05 -4.26103e-05"/>
     <axis xyz="-1 8.6394e-05 -9.18277e-07"/>
     <limit lower="0.174533" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightKneeFlex" type="revolute">
     <parent link="RightHipFB_link"/><child link="RightKneeFlex_link"/>
     <origin xyz="0.00100219 0.0249258 -0.0433649" rpy="-1.33 8.32021e-05 -6.66828e-05"/>
     <axis xyz="1 -8.6394e-05 9.18277e-07"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightAnkleFB" type="revolute">
     <parent link="RightKneeFlex_link"/><child link="RightAnkleFB_link"/>
     <origin xyz="-0.00125198 -0.0222689 -0.0459019" rpy="-1.92 7.99472e-05 -0.000116817"/>
     <axis xyz="1 -8.6394e-05 9.18277e-07"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="RightAnkleUD" type="revolute">
     <parent link="RightAnkleFB_link"/><child link="RightAnkleUD_link"/>
     <origin xyz="-0.00744517 -0.00152852 -0.0467632" rpy="-1.51113 -1.55082 1.53091"/>
     <axis xyz="8.63185e-05 0.999802 -0.019877"/>
     <limit lower="1.13446" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftHipLR" type="revolute">
     <parent link="torso_link"/><child link="LeftHipLR_link"/>
     <origin xyz="-0.0291305 -0.00180378 0.221854" rpy="0 -1.57 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="1.0472" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftHipFB" type="revolute">
     <parent link="LeftHipLR_link"/><child link="LeftHipFB_link"/>
     <origin xyz="-2.57395e-05 0.000813951 -0.0439522" rpy="-2.09 6.3342e-05 -0.00010823"/>
     <axis xyz="1 -7.24933e-05 -2.68846e-07"/>
     <limit lower="0" upper="2.96706" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftKneeFlex" type="revolute">
     <parent link="LeftHipFB_link"/><child link="LeftKneeFlex_link"/>
     <origin xyz="6.95862e-06 0.0244177 -0.0427664" rpy="1.81 -7.00967e-05 -8.99303e-05"/>
     <axis xyz="-1 7.24933e-05 2.68846e-07"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftAnkleFB" type="revolute">
     <parent link="LeftKneeFlex_link"/><child link="LeftAnkleFB_link"/>
     <origin xyz="0.0012483 -0.0218333 -0.0553637" rpy="1.22 -6.7902e-05 -4.78338e-05"/>
     <axis xyz="-1 7.24933e-05 2.68846e-07"/>
     <limit lower="0" upper="3.14159" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="LeftAnkleUD" type="revolute">
     <parent link="LeftAnkleFB_link"/><child link="LeftAnkleUD_link"/>
     <origin xyz="0.00744843 -0.00232359 -0.0378887" rpy="-1.51334 -1.54784 1.53613"/>
     <axis xyz="7.24682e-05 0.999738 -0.0228713"/>
     <limit lower="0" upper="2.00713" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <joint name="NeckLR" type="revolute">
     <parent link="torso_link"/><child link="NeckLR_link"/>
     <origin xyz="-0.000297208 0.00599331 0.320007" rpy="-0 -0 1.57"/>
     <axis xyz="0 0 -1"/>
     <limit lower="0.261799" upper="2.87979" effort="1.15" velocity="6.0"/>
-    <dynamics damping="0.08" friction="0.01"/>
+    <dynamics damping="0.12" friction="0.08"/>
   </joint>
   <link name="head_camera_optical_frame"/>
   <joint name="head_camera_joint" type="fixed">

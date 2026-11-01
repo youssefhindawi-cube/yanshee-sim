@@ -60,8 +60,24 @@ SOURCE_ROTOR_INERTIA = 1.4e-4  # kg*m^2
 # 1.05 N*m and falls forward on a grippy one (friction 1.4, the mat) only below 1.3 N*m, as the robot did.
 SERVO_KP = 8.0          # N*m/rad position gain (assumed)
 SERVO_TORQUE = 1.15     # N*m stall torque limit
-SERVO_DAMPING = 0.08    # N*m*s/rad
-SERVO_ARMATURE = 0.002  # kg*m^2 reflected rotor inertia
+# Damping and gear friction fitted on 29 Oct 2026 by replaying the robot's own AppWalk servo frames (from its on-board
+# log) in the simulator (tools/sim2real_replay.py): with 0.08 / 0.01 the simulator fell in a walk the robot finished
+# and swayed more (pitch error 6.2 deg, roll 3.8 deg RMS over 14 walks); with 0.12 / 0.08 falls agree in 13 of 14
+# walks (the 14th started while the robot was still swinging from the previous stop), errors 5.0 / 2.9 deg, and the
+# 4 SwayStep walks kept out of the fit improve too (9.3 / 3.1 -> 7.2 / 2.3 deg). More damping (0.24) or gear friction
+# (0.15) fitted the walks as well but broke the GetupFront fit above (the simulator no longer stood up on a smooth
+# floor): the geared servos resist small sways more than fast moves.
+SERVO_DAMPING = 0.12      # N*m*s/rad
+SERVO_FRICTIONLOSS = 0.08  # N*m gear (Coulomb) friction
+SERVO_ARMATURE = 0.002    # kg*m^2 reflected rotor inertia
+# Sliding friction of the robot's surfaces and of the default (smooth hard) floor; MuJoCo takes the larger of the two
+# touching surfaces, so the mat (MAT_FRICTION) is unaffected. 0.8, not 1.0: replaying the robot's 29 Oct walks
+# (tools/sim2real_replay.py) the simulator then agrees with the robot on 4 of 4 turns in place (2 of 4 at 1.0: it fell
+# in turns the robot finished) and on 16 of 17 walks, forward walks unchanged; GetupFront still stands up on it.
+# 0.7 since 1 Nov 2026: with the replay's clock-drift fix 0.7 agrees on 17 of 17 walks (0.8: 15, 0.6: 15), and the
+# simulator's TurnLeft leans up to 21 deg as the robot's did (16-22 deg) where at 0.8 it fell over every time at
+# about 4 s (the stance sole gripped too hard to pivot, so the twist tipped the body).
+CONTACT_FRICTION = 0.7
 
 
 def rot(axis_angle):
@@ -271,11 +287,11 @@ def build_mjcf(bodies, files, z0=None):
          '  <compiler angle="radian" meshdir="meshes" autolimits="true"/>',
          '  <option timestep="0.002" integrator="implicitfast"/>',
          '  <default>',
-         f'    <joint damping="{SERVO_DAMPING}" armature="{SERVO_ARMATURE}" frictionloss="0.01"/>',
+         f'    <joint damping="{SERVO_DAMPING}" armature="{SERVO_ARMATURE}" frictionloss="{SERVO_FRICTIONLOSS}"/>',
          f'    <position kp="{SERVO_KP}" forcerange="-{SERVO_TORQUE} {SERVO_TORQUE}"/>',
          '    <default class="visual"><geom type="mesh" contype="0" conaffinity="0" group="2" mass="0"/></default>',
          '    <default class="collision"><geom type="mesh" group="3" rgba="0.8 0.3 0.3 0.4" mass="0"'
-         ' contype="1" conaffinity="0" condim="3" friction="1.0 0.02 0.001"/></default>',
+         f' contype="1" conaffinity="0" condim="3" friction="{CONTACT_FRICTION} 0.02 0.001"/></default>',
          '  </default>',
          '  <asset>']
     for c in colors:
@@ -367,11 +383,11 @@ SCENE = """<mujoco model="yanshee scene">
   </asset>
   <worldbody>
     <light pos="0.5 -0.5 1.5" dir="-0.3 0.3 -1" directional="true"/>
-    <geom name="floor" type="plane" size="2 2 0.05" material="grid" contype="0" conaffinity="1" friction="1.0 0.02 0.001"/>
+    <geom name="floor" type="plane" size="2 2 0.05" material="grid" contype="0" conaffinity="1" friction="{CONTACT_FRICTION} 0.02 0.001"/>
     <camera name="front" pos="0 0.85 0.3" xyaxes="-1 0 0 0 -0.25 1"/>
   </worldbody>
 </mujoco>
-"""
+""".replace("{CONTACT_FRICTION}", str(CONTACT_FRICTION))
 
 
 # Floor friction of the soft play mat our robot is tested on: the value at which the sim's GetupFront falls forward
@@ -381,7 +397,7 @@ MAT_FRICTION = 1.4
 
 def scene_mat():
     """SCENE with the mat's floor friction (model/scene_mat.xml)."""
-    floor = 'conaffinity="1" friction="1.0 0.02 0.001"'
+    floor = f'conaffinity="1" friction="{CONTACT_FRICTION} 0.02 0.001"'
     assert SCENE.count(floor) == 1
     return (SCENE.replace("<!-- Floor, light and camera", f"<!-- Play mat (floor friction {MAT_FRICTION}): floor, light and camera")
             .replace(floor, f'conaffinity="1" friction="{MAT_FRICTION} 0.02 0.001"'))
@@ -484,7 +500,7 @@ def build_urdf(bodies, files):
         L.append(f'    <origin xyz="{fmt(b.origin - b.parent.origin)}" rpy="{r:.6g} {p:.6g} {y:.6g}"/>')
         L.append(f'    <axis xyz="{fmt(b.joint["axis"])}"/>')
         L.append(f'    <limit lower="{math.radians(lo):.6g}" upper="{math.radians(hi):.6g}" effort="{SERVO_TORQUE}" velocity="6.0"/>')
-        L.append(f'    <dynamics damping="{SERVO_DAMPING}" friction="0.01"/>')
+        L.append(f'    <dynamics damping="{SERVO_DAMPING}" friction="{SERVO_FRICTIONLOSS}"/>')
         L.append('  </joint>')
     # head camera as a fixed frame (REP-103 optical convention: z forward, x right, y down)
     for b in bodies:

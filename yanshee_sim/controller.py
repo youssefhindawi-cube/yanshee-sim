@@ -22,7 +22,9 @@ that slips past the check is undone (robot stops and holds). Commands that arriv
 switch is still running are refused.
 """
 import atexit
+import collections
 import itertools
+import glob
 import json
 import logging
 import math
@@ -34,9 +36,10 @@ import weakref
 from collections import deque
 
 from . import motion as motion_mod
-from . import recovery, sim_extras
+from . import appwalk, recovery, sim_extras
 from .walkstats import WalkStats
-from . import robot_stream
+from . import hts, robot_stream
+from .robot_stream import hts_copy
 from .shadow import Shadow
 from .mirror import SimToRobot
 from .rest import SPEEDS, RobotUnreachable
@@ -258,13 +261,19 @@ class Controller:
         # not save the robot from a 0.5 N.s shove at the head (the step starts too late) and once made it worse.
         self.reflex_enabled = False
         self.auto_get_up = False  # stand the real robot up by itself after a real fall (recovery.FallDetector)
+        self.balance = False  # IMU balance on AppWalk (yanshee_sim.balance): set_balance
+        self._balance_robot = "off"  # the robot side of it: "on", "off" or why it is off
         self._robot_posture, self._recovering = None, False
-        self._stats = {}  # walking statistics per method (tools/walk_stats.py): AppWalk on the robot, SwayStep in the sim
-        self.walk_method = "app"  # the robot's walk: 'app' (AppWalk, UBTECH's firmware gait) or 'sway' (SwayStep streamed)
+        # settle gate (AppWalk): when the last stop / turn release was sent, recent IMU samples, the standing lean
+        self._robot_stop_t, self._imu_hist, self._stand_ref = None, collections.deque(maxlen=64), None
+        self._stats = {}  # walking statistics per method (tools/walk_stats.py): on the robot and in the sim
+        self.walk_method = "app"  # the walk: 'app' (AppWalk, UBTECH's firmware gait) or 'sway' (SwayStep, archived)
         self._link = None  # (robot, robot_stream.RobotStream): the robot link (SwayStep, IMU, encoders, hal monitor)
         self._shadow = None  # shadow.Shadow: physics fed the robot's servo frames, logged against the real robot
         self.link_enabled = True  # open the robot link on connect (not for a robot on this machine: the fake robot)
         self.link_enc_hz = 5.0  # encoder reads per second through the link (hal_servo_read, about 35 ms each)
+        self.link_watchdog_s = robot_stream.WATCHDOG_S  # the robot stops itself after this long without the laptop
+        self._link_lost = False  # the link dropped and _link_keeper is bringing it back
         self._robot_imu, self._heading0, self._s2r, self._s2r_lock = None, None, None, threading.Lock()
         self._link_lock, self._shadow_state = threading.Lock(), None
         self._s2r_stamp = None  # the session name shared by the laptop's and the robot's logs
@@ -410,7 +419,7 @@ class Controller:
                 if self.mode == "sim" and not self.sim.mirroring and not (act is not None and act.name.startswith("tip over")):
                     try:
                         g = self.sim.get_sensors_gyro()["data"]["gyro"][0]
-                        self._stat("SwayStep (sim)").fall(recovery.posture(g["euler-x"], g["euler-y"]))
+                        self._stat(f"{self._robot_method_name()} (sim)").fall(recovery.posture(g["euler-x"], g["euler-y"]))
                     except Exception as e:  # noqa: BLE001 - statistics only
                         log.warning("walk stats: %s", e)
             self._tilt, self._fallen = tilt, fallen
@@ -746,8 +755,10 @@ class Controller:
             threading.Thread(target=self._twin_loop, args=(robot, stop), name="ctl-twin", daemon=True).start()
             threading.Thread(target=self._robot_fall_loop, args=(robot, stop), name="ctl-fall", daemon=True).start()
             self._s2r_stamp = time.strftime("%Y%m%d_%H%M%S")
+            self._robot_stop_t, self._stand_ref = None, None  # a new connection: nothing to settle from yet
+            self._imu_hist.clear()
             if self.link_enabled and robot.host not in ("127.0.0.1", "localhost", "::1"):
-                threading.Thread(target=self._open_link_quietly, args=(robot, stop), name="ctl-link", daemon=True).start()
+                threading.Thread(target=self._link_keeper, args=(robot, stop), name="ctl-link", daemon=True).start()
             self._event("info", f"connected to robot at {ip} (battery {robot.battery}%)")
             if robot.battery < self.min_battery:
                 self._event("warn", f"robot battery {robot.battery}% is below {self.min_battery}%: "
@@ -768,12 +779,14 @@ class Controller:
                 self.robot, self._twin_stop, self._robot_servos = None, None, None
                 self._stop_gen += 1
                 link, self._link, self._robot_imu, self._heading0 = self._link, None, None, None
+                self._link_lost = False
                 shadow, self._shadow = self._shadow, None
                 s2r, self._s2r = self._s2r, None
                 with self._gate_lock:
                     self.gate = None
                 self._robot_info = self._empty_robot_info()
             if link is not None:
+                link[0].rest.relay = None
                 link[1].close()
                 threading.Thread(target=self._fetch_robot_log, args=(link[1],), name="ctl-fetch", daemon=True).start()
             if shadow is not None:
@@ -791,7 +804,9 @@ class Controller:
             robot_info = {k: v for k, v in self._robot_info.items() if not k.startswith("_")}
             robot_info.update(posture=self._robot_posture if self.robot is not None else None, auto_get_up=self.auto_get_up,
                               walk_method=self.walk_method, mirroring=self.sim.mirroring,
+                              balance=self.balance, balance_robot=self._balance_robot,
                               link=self._link is not None and self._link[1].alive,
+                              link_lost=self._link_lost and self.robot is not None,
                               shadow=dict(self._shadow_state) if self._shadow_state else None)
             robot_servos = dict(self._robot_servos) if self._robot_servos else None
             mode, act, side, music = self.mode, self._activity, self._side, self._music
@@ -829,6 +844,12 @@ class Controller:
                 act.hard = True
                 act.stop.set()
             self.sim.stop_all()
+            link = self._link
+            if link is not None and link[1].alive and link[1].turning:  # the node's own turn: stop it now
+                try:
+                    link[1].turn("!")
+                except RuntimeError:
+                    pass
             res = robot.stop_all() if robot is not None else None
             self._cancel_activity(timeout=5.0)
             self.sim.stop_all()
@@ -860,38 +881,103 @@ class Controller:
                 return self._fail(f"reset {why}", level="warn")
             warnings = []
             if use_robot:
-                if robot_was_busy or self._gate_stale:
-                    err = self._resync_gate(robot)
-                    if err:
-                        return self._fail(f"reset: cannot read the robot's pose ({err})")
-                with self._gate_lock:
-                    gate = self._live_gate(robot)
-                    status, info, rt = (gate.command(dict(RESET_POSE), 1000) if gate is not None
-                                        else ("error", "robot disconnected", 1000))
-                if status == "blocked":  # the straight path collides: let the robot's own reset do it
-                    warnings.append(f"straight path to reset collides ({info}); using the robot's reset motion")
-                    res, err = self._call("reset", lambda: robot.play_builtin("reset"))
-                    if err:
-                        return self._fail(err)
-                    with self._gate_lock:
-                        self._gate_stale = True
-                elif status != "sent":
-                    with self._gate_lock:
-                        self._gate_stale = True
-                    return self._fail(f"reset: {info}")
+                warn, err = self._robot_reset_pose(robot, robot_was_busy or self._gate_stale)
+                if warn:
+                    warnings.append(warn)
+                if err:
+                    return self._fail(err)
                 if not self._current(gen):
                     self._undo_robot(robot)
                     return self._fail("reset cancelled by STOP", level="warn")
             if use_sim:
-                def sim_reset():
-                    if self._fallen or self.sim.torso_tilt_deg() > FALL_DEG:
-                        self.sim.respawn()
-                    else:
-                        self.sim.set_servos_angles(dict(RESET_POSE), 1000)
-                if not self._sim_send(gen, sim_reset):
+                if not self._sim_send(gen, self._sim_reset_pose):
                     return self._fail("reset cancelled by STOP", level="warn")
             self._event("info", "reset")
         return {"ok": True, "warnings": warnings}
+
+    RESET_MOVE_S = 1.2  # the reset move (1000 ms) and a little settling
+    RECENTER_ROUNDS = 2  # get up: at most this many tries at stepping a splayed leg in
+    LEGS = [n for n in NAMES if "Hip" in n or "Knee" in n or "Ankle" in n]
+
+    def _sim_recenter(self, a):
+        """After a get-up: step a leg left splayed back in (recovery.recenter_steps). True when the hip rolls are
+        back at the reset pose."""
+        for _ in range(self.RECENTER_ROUNDS + 1):
+            sp = recovery.splayed_legs(self.sim._read(self.LEGS))
+            if not sp:
+                return True
+            if _ == self.RECENTER_ROUNDS or a.stop.is_set() or self.sim.torso_tilt_deg() > 30:
+                return False
+            for ang, ms, w in recovery.recenter_steps(self.sim._read(self.LEGS), sp[0]):
+                if a.stop.is_set():
+                    return False
+                self.sim.set_servos_angles(ang, ms)
+                self.sim.wait(w)
+        return False
+
+    def _robot_recenter(self, a, robot):
+        """The robot version of _sim_recenter, through the gate, stopping if it tips. Returns a problem or None."""
+        for k in range(self.RECENTER_ROUNDS + 1):
+            res, e = self._call("servo read", lambda: robot.get_servos_angles(self.LEGS))
+            if e:
+                return f"cannot read the legs ({e})"
+            ang = {n: float(v) for n, v in (res.get("data") or {}).items()}
+            sp = recovery.splayed_legs(ang, tol=recovery.RECENTER_TOL + 1)  # whole-degree encoders, a degree short
+            if not sp:
+                return None
+            if k == self.RECENTER_ROUNDS:
+                return f"the {sp[0].lower()} leg is still out ({ang[sp[0] + 'HipLR']:.0f} deg hip roll) after {k} tries"
+            locked = self._locked_servos(robot)
+            if locked:
+                return (f"{', '.join(locked)} stall-locked, so the leg cannot be stepped in: lay the robot down, switch "
+                        "those servos to program mode, then Reset")
+            err = self._resync_gate(robot)  # the gate's estimate starts from where the legs really are
+            if err:
+                return f"cannot read the robot's pose ({err})"
+            self._event("info", f"get up: stepping the {sp[0].lower()} leg in (hip roll {ang[sp[0] + 'HipLR']:.0f} deg)")
+            for target, ms, w in recovery.recenter_steps(ang, sp[0]):
+                if a.stop.is_set():
+                    return None
+                with self._gate_lock:
+                    gate = self._live_gate(robot)
+                    status, info, rt = gate.command(target, ms) if gate is not None else ("error", "robot disconnected", ms)
+                if status != "sent":
+                    return f"stepping the leg in: move not sent ({info})"
+                a.stop.wait(max(w, rt / 1000 + 0.1))
+                ex, _ = recovery.read_imu(robot.rest)
+                if recovery.posture(ex) != "upright":
+                    return f"it tipped while stepping the leg in (euler-x {ex:+.0f}): stopped"
+        return None
+
+    def _robot_reset_pose(self, robot, resync):
+        """The Reset button's robot move: RESET_POSE through the gate in 1 s, or the robot's own reset motion if that
+        straight path would collide. resync: read the robot's pose into the gate first (it moved on its own).
+        Returns (warning or None, error or None)."""
+        if resync:
+            err = self._resync_gate(robot)
+            if err:
+                return None, f"reset: cannot read the robot's pose ({err})"
+        with self._gate_lock:
+            gate = self._live_gate(robot)
+            status, info, rt = (gate.command(dict(RESET_POSE), 1000) if gate is not None
+                                else ("error", "robot disconnected", 1000))
+        if status == "blocked":  # the straight path collides: let the robot's own reset do it
+            res, err = self._call("reset", lambda: robot.play_builtin("reset"))
+            with self._gate_lock:
+                self._gate_stale = True
+            return f"straight path to reset collides ({info}); using the robot's reset motion", err
+        if status != "sent":
+            with self._gate_lock:
+                self._gate_stale = True
+            return None, f"reset: {info}"
+        return None, None
+
+    def _sim_reset_pose(self):
+        """The Reset button's simulator move: RESET_POSE in 1 s, or respawn if it is down."""
+        if self._fallen or self.sim.torso_tilt_deg() > FALL_DEG:
+            self.sim.respawn()
+        else:
+            self.sim.set_servos_angles(dict(RESET_POSE), 1000)
 
     # -- servos ----------------------------------------------------------------------------------
     def set_servos(self, angles, runtime=500):
@@ -1110,6 +1196,10 @@ class Controller:
         if use_sim and not use_robot and sim_motion is None and not sim_walk:
             return self._fail(f"'{label}' is not available in simulation (connect a robot and use Robot or Both)",
                               level="warn")
+        if sim_walk and use_sim and not use_robot:
+            why = self._sim_walk_refusal(*WALK_PARAMS[direction])
+            if why:
+                return self._fail(f"'{label}' in the simulator: {why}", level="warn")
         refusal = self._battery_refusal(use_sim and (sim_motion is not None or sim_walk), use_robot)
         if refusal:
             return self._fail(refusal, level="warn")
@@ -1138,7 +1228,7 @@ class Controller:
             twin = use_robot and use_sim and sim_motion is None
             if use_sim and not use_robot:
                 total_s = motion_mod.duration_s(sim_motion, SPEED_FACTOR[speed]) if sim_motion else \
-                    4 * repeat * sim_extras.SimGait.cycle_time(SPEED_PERIOD[speed]) / 2
+                    4 * repeat * self._sim_cycle_time(SPEED_PERIOD[speed]) / 2
             act = _Activity("action", label, target, duration=total_s, twin=twin,
                             detail="sim follows the robot" if twin else "")
             act.robot_name, act.version = name, version
@@ -1202,11 +1292,24 @@ class Controller:
         return any(n.lower() == name.lower() for n, _, _ in live)
 
     # -- gait -------------------------------------------------------------------------------------
+    def _sim_walk_refusal(self, speed_v, speed_h, turn=0):
+        """Why the simulator cannot walk this command the robot's way (AppWalk not recorded for it), or None."""
+        if self.walk_method != "app":
+            return None
+        return appwalk.AppWalkSim.unsupported(speed_v, speed_h, turn)
+
+    def _sim_cycle_time(self, period):
+        return (appwalk.AppWalkSim if self.walk_method == "app" else sim_extras.SimGait).cycle_time(period)
+
     def _sim_gait(self, act):
-        gait = sim_extras.SimGait(self.sim)
+        """The simulator's own walk: AppWalk, the robot's recorded firmware walk played back (appwalk.AppWalkSim);
+        SwayStep (sim_extras.SimGait) only when walk_method 'sway' was allowed (archived, YANSHEE_ALLOW_SWAY=1)."""
+        gait = (appwalk.AppWalkSim(self.sim, balance=self.balance) if self.walk_method == "app"
+                else sim_extras.SimGait(self.sim))
 
         def text(p):
-            return "sim: " + gait.describe(p.get("speed_v", 0), p.get("speed_h", 0), p.get("turn", 0))
+            return f"sim: {self._robot_method_name()}, " + gait.describe(p.get("speed_v", 0), p.get("speed_h", 0),
+                                                                         p.get("turn", 0))
         act.detail = text(act.params)
 
         def on_step(n):
@@ -1218,11 +1321,12 @@ class Controller:
     def gait(self, speed_v, speed_h, steps=0, period=1, wave=False, lease_s=None, turn=0, quick=False):
         """Walk. speed_v -5..5 (+ forward), speed_h -5..5 (+ left), steps 0 = until gait_stop(), period 1..5 (0
         stops), turn -5..5 (+ anticlockwise). Calling it while walking changes the command in place.
-        Two walking methods: the simulator runs SwayStep (sim_extras.SimGait, our gait); the robot runs AppWalk, the
-        way the Yanshee mobile app drives it (captured 29 Oct 2026): the firmware gait for walking, TurnLeft /
-        TurnRight with start_async and repeat 0 for turning (resent while held), and an all-zero gait command to
-        stop (walk_method 'app'), or SwayStep streamed to the robot (walk_method 'sway'). With a robot (Robot or Both
-        mode) the sim mirrors it and the shadow simulator gets its servo frames.
+        The robot walks with AppWalk, the way the Yanshee mobile app drives it (captured 29 Oct 2026): the firmware
+        gait for walking, TurnLeft / TurnRight with start_async and repeat 0 for turning (resent while held), and an
+        all-zero gait command to stop. The simulator alone plays the same walk back from the robot's recorded frames
+        (appwalk.AppWalkSim; directions not recorded yet are refused). With a robot (Robot or Both mode) the sim
+        mirrors it and the shadow simulator gets its servo frames. SwayStep, our own gait (walk_method 'sway', in the
+        simulator and streamed to the robot), is archived (docs/archive/SWAYSTEP_ON_ROBOT.md).
         lease_s (dead-man, for steps=0): the walk stops unless gait() or gait_keepalive() is called again within
         lease_s seconds. None = no lease (the web server always sets one for steps=0)."""
         vals = (speed_v, speed_h, steps, period, turn)
@@ -1241,6 +1345,10 @@ class Controller:
                   "turn": turn, "quick": bool(quick)}
         target = self._target_name(use_sim, use_robot)
         lease = lease_s if not steps else None
+        if use_sim and not use_robot:
+            why = self._sim_walk_refusal(speed_v, speed_h, turn)
+            if why:
+                return self._fail(f"gait in the simulator: {why}", level="warn")
         with self._act_lock:
             act = self._activity
             if act is not None and act.kind == "gait" and not act.done.is_set() and not act.stop.is_set() and \
@@ -1266,7 +1374,9 @@ class Controller:
             why = self._begin(gen, robot if use_robot else None)
             if why:
                 return self._fail(f"gait {why}", level="warn")
-            if use_robot and self.walk_method == "app":
+            if use_robot and self.walk_method == "app" and not self._robot_settled():
+                params["_pending"] = True  # too soon after the last stop: the walk's loop starts it once settled
+            elif use_robot and self.walk_method == "app":
                 res, err = self._call_start("gait", lambda: self._robot_walk_send(robot, {}, params, True),
                                             robot.rest.gait_exit)
                 if err:
@@ -1274,8 +1384,8 @@ class Controller:
                 if not self._current(gen):
                     self._undo_robot(robot)
                     return self._fail("gait cancelled by STOP", level="warn")
-            duration = steps * sim_extras.SimGait.cycle_time(period) / 2 if steps else None
-            method = self._robot_method_name() if use_robot else "SwayStep"
+            duration = steps * self._sim_cycle_time(period) / 2 if steps else None
+            method = self._robot_method_name()
             act = _Activity("gait", sim_extras.SimGait.describe(speed_v, speed_h, turn), target, duration=duration,
                             twin=use_robot, detail=f"robot: {method}" + (", the sim mirrors it" if use_sim or use_robot else ""))
             act.params, act.lease_s = params, lease
@@ -1302,37 +1412,113 @@ class Controller:
     REFLEX_MARGIN_M = 0.015  # capture point this far outside the support circle while standing = about to tip
     APP_TURN_RESEND_S = 0.4  # the mobile app resends its turn about every 0.4 s while the stick is held
 
+    # Settle gate (from the robot's own log, 29 Oct 2026): left alone after an AppWalk stop the robot is back within 3
+    # deg of standing in 0.25-1.5 s; walks restarted 0.9-1.5 s after a stop caught it still swinging and leaned it back
+    # 11-38 deg, and the one forward-walk fall followed such a restart. A turn's release plays ResetSwitch (1.1 s).
+    # So a walk start, a turn start and a walk<->turn switch wait until the robot has settled.
+    SETTLE_MIN_S = 1.2   # at least this long after the last stop / turn release
+    SETTLE_MAX_S = 2.5   # at most this long: then go anyway
+    SETTLE_DEG = 3.0     # pitch and roll within this of the standing lean ...
+    SETTLE_HOLD_S = 0.5  # ... for this long
+
+    def _robot_settled(self):
+        t = self._robot_stop_t
+        if t is None:
+            return True
+        age = time.monotonic() - t
+        if age >= self.SETTLE_MAX_S:
+            return True
+        if age < self.SETTLE_MIN_S:
+            return False
+        now = time.monotonic()
+        recent = [h for h in list(self._imu_hist) if h[0] >= now - self.SETTLE_HOLD_S]
+        if len(recent) < 2:
+            return False
+        if self._stand_ref is not None:
+            rx, ry = self._stand_ref
+            return all(abs(ex - rx) < self.SETTLE_DEG and abs(ey - ry) < self.SETTLE_DEG for _, ex, ey, _ in recent)
+        xs, ys = [h[1] for h in recent], [h[2] for h in recent]
+        return max(xs) - min(xs) < self.SETTLE_DEG and max(ys) - min(ys) < self.SETTLE_DEG
+
     def _robot_walk_send(self, robot, prev, params, new):
         """One AppWalk command to the robot: the firmware gait, or TurnLeft/TurnRight with start_async and repeat 0
         when only turning (resent at most every APP_TURN_RESEND_S; a running walk gets the app's stop first). The
         robot cannot walk and turn at once: with speeds set, the turn is left to the sim."""
         v, h, t = params["speed_v"], params["speed_h"], params.get("turn", 0)
-        if t and not v and not h:
-            name, now = ("TurnLeft" if t > 0 else "TurnRight"), time.monotonic()
+        if not new and prev.get("_pending"):
+            return {"code": 0, "data": {}, "msg": "settling"}  # the walk's loop starts it once the robot has settled
+        turning = bool(t and not v and not h)
+        was_walking = not new and bool(prev.get("speed_v") or prev.get("speed_h"))
+        was_turning = not new and bool(prev.get("_turn"))
+        want = ("TurnLeft" if t > 0 else "TurnRight") if turning else None
+        if (turning and was_walking) or (not turning and was_turning) or (turning and was_turning and want != prev.get("_turn")):
+            # a walk<->turn (or turn direction) switch: the app's stop now, the new movement once settled
+            self._s2r_write("walk_cmd", v=0, h=0, turn=0, period=0, wave=params["wave"])
+            self._robot_turn_release(robot, prev, params["wave"])
+            self._robot_stop_t = time.monotonic()
+            params["_turn"], params["_pending"] = None, True
+            return {"code": 0, "data": {}, "msg": "settling"}
+        if turning:
+            name, now = want, time.monotonic()
+            node = self._node_turns(robot)
+            if node is not None:  # balance on the robot: the robot link's node plays the turn, with the balance
+                if not new and prev.get("_turn") == name and prev.get("_turn_node"):
+                    return {"code": 0, "data": {}, "msg": "turning"}
+                params["_turn"], params["_turn_t"], params["_turn_node"] = name, now, True
+                self._s2r_write("walk_cmd", v=0, h=0, turn=t, period=params["period"], wave=params["wave"], node=True)
+                node.turn(name)
+                return {"code": 0, "data": {}, "msg": "turning (balanced, played on the robot)"}
             if not new and prev.get("_turn") == name and now - prev.get("_turn_t", 0.0) < self.APP_TURN_RESEND_S:
                 return {"code": 0, "data": {}, "msg": "turning"}
-            if not new and (prev.get("speed_v") or prev.get("speed_h")):
-                robot.rest.gait(0, 0, 0, 0, params["wave"])  # walking -> turning: the app's stop first
-            params["_turn"], params["_turn_t"] = name, now
+            params["_turn"], params["_turn_t"], params["_turn_node"] = name, now, False
+            self._s2r_write("walk_cmd", v=0, h=0, turn=t, period=params["period"], wave=params["wave"])
             return robot.rest.motion_control("start_async", name, "v1", "left", "normal", 0, int(time.time() * 1000))
         params["_turn"] = None
+        # which command started each walk, for tools/extract_appwalk.py (the simulator's copy of the robot's walk)
+        self._s2r_write("walk_cmd", v=v, h=h, turn=0, period=params["period"], wave=params["wave"])
         return robot.rest.gait(v, h, params["steps"], params["period"], params["wave"])
+
+    def _node_turns(self, robot):
+        """The robot link's stream when turns go through it: the balance runs on the robot and the node has the
+        turn motions; else None (hal plays TurnLeft/TurnRight itself, the mobile app's way)."""
+        link = self._link
+        if (self._balance_robot == "on" and link is not None and link[0] is robot and link[1].alive
+                and getattr(link[1], "turns_loaded", False)):
+            return link[1]
+        return None
+
+    def _robot_turn_release(self, robot, p, wave=False):
+        """Release a turn (or stop a walk): the node's own turn ends with its ResetSwitch; otherwise the mobile app's
+        stop, a gait command with every value 0 (hal ends its turn with ResetSwitch, a walk winds down)."""
+        link = self._link
+        if p.get("_turn_node") and p.get("_turn") and link is not None and link[0] is robot and link[1].alive:
+            link[1].turn(None)
+            return {"code": 0, "data": {}, "msg": "turn released"}
+        return robot.rest.gait(0, 0, 0, 0, wave)
 
     def _robot_method_name(self):
         return "SwayStep" if self.walk_method == "sway" else "AppWalk"
 
     WALK_METHODS = ("app", "sway")
+    # SwayStep on the real robot was tried on 29 Oct 2026 and ARCHIVED: it oscillated in pitch and fell backward in 2 of
+    # 4 runs (docs/archive/SWAYSTEP_ON_ROBOT.md); parked in the simulator too on 1 Nov 2026, which now walks the robot's
+    # recorded AppWalk. The code stays; robot and simulator walk with AppWalk unless this is set.
+    ARCHIVED_ENV = "YANSHEE_ALLOW_SWAY"
 
     def set_walk_method(self, method):
-        """The robot's walk: 'app' = AppWalk (UBTECH's firmware gait, the mobile app's way), 'sway' = SwayStep (our gait,
-        streamed to /hal_angles_set at 50 per second; its link to the robot opens in the background now)."""
+        """The walk: 'app' = AppWalk (UBTECH's firmware gait, the mobile app's way; the simulator plays the robot's
+        recorded frames). 'sway' = SwayStep, our own gait, in the simulator and streamed to the robot (archived:
+        refused unless the environment variable YANSHEE_ALLOW_SWAY=1)."""
         if method not in self.WALK_METHODS:
             return self._fail(f"walk method must be one of {list(self.WALK_METHODS)}", level="warn")
+        if method == "sway" and os.environ.get(self.ARCHIVED_ENV) != "1":
+            return self._fail("SwayStep on the real robot is archived (it oscillated and fell, 29 Oct 2026; see "
+                              f"docs/archive/SWAYSTEP_ON_ROBOT.md); set {self.ARCHIVED_ENV}=1 to try it again", level="warn")
         act = self._activity
         if act is not None and act.kind == "gait" and not act.done.is_set():
             return self._fail("stop walking before changing the walk method", level="warn")
         self.walk_method = method
-        self._event("info", f"robot walk method: {self._robot_method_name()}")
+        self._event("info", f"walk method: {self._robot_method_name()}")
         with self._lock:
             robot = self.robot
         if method == "sway" and robot is not None and self._link is None:
@@ -1350,12 +1536,23 @@ class Controller:
                 return link[1]
             stream = robot_stream.RobotStream(robot.host, log=lambda kind, **d: self._s2r_write(kind, **d),
                                               on_frame=self._on_robot_frame, enc_hz=self.link_enc_hz,
-                                              session=self._s2r_stamp)
+                                              session=self._s2r_stamp, on_motion=self._on_robot_motion,
+                                              watchdog_s=self.link_watchdog_s, on_watchdog=self._on_robot_watchdog)
             with self._lock:
                 if self.robot is not robot:
                     stream.close()
                     raise RuntimeError("the robot was disconnected")
                 self._link = (robot, stream)
+                robot.rest.relay = stream.rest  # AppWalk's commands through the link while it is up
+            try:  # the turn motions, for turns with the balance (the node plays them)
+                turns = appwalk.load().get("turns") or {}
+                if all(n in turns for n in ("TurnLeft", "TurnRight", "ResetSwitch")):
+                    stream.load_turns(turns)
+                    stream.turns_loaded = True
+            except (RuntimeError, OSError, ValueError) as e:
+                log.warning("turn motions not sent to the robot: %s", e)
+            if self.balance:
+                self._apply_robot_balance()  # a new link (a reconnect too) starts without it
                 if self._shadow is None:
                     self._shadow = Shadow()
             self._event("info", f"robot link is up: the robot logs its readings on board ({stream.robot_log}, robot "
@@ -1375,18 +1572,88 @@ class Controller:
     def _dump_dir(self):
         return os.environ.get("YANSHEE_DUMP_DIR") or os.path.join(ROOT, "robot_dump")  # tests redirect it
 
-    def _open_link_quietly(self, robot, stop):
-        try:
-            self._robot_link(robot)
-        except Exception as e:  # noqa: BLE001 - AppWalk and the REST mirror still work without it
-            self._event("warn", f"robot link not available ({e}): SwayStep on the robot and the shadow simulator are off")
-            return
-        threading.Thread(target=self._shadow_loop, args=(robot, stop), name="ctl-shadow", daemon=True).start()
+    LINK_SILENT_S = 5.0  # the link counts as lost after this long without a word from the robot (its IMU: 19 per second)
+    LINK_RETRY_S = (5.0, 10.0, 20.0, 30.0)  # then a new link is tried after these waits (the last one repeating)
+    LINK_CHECK_S = 1.0  # how often a running link is checked
 
-    def _on_robot_frame(self, angles, ms, src, ours):
-        shadow = self._shadow
-        if shadow is not None:
-            shadow.feed(angles, ms)
+    def _link_keeper(self, robot, stop):
+        """The robot link for this connection: opened at connect, dropped when it ends or the robot goes silent (a
+        Wi-Fi drop), opened again until it is back. REST needs nothing of this: each call connects anew."""
+        delay, tries, shadow = 0.0, 0, False
+        while not stop.wait(delay):
+            with self._lock:
+                if self.robot is not robot:
+                    return
+                link = self._link
+            stream = link[1] if link is not None and link[0] is robot else None
+            if stream is not None:
+                if stream.alive and stream.silence < self.LINK_SILENT_S:
+                    delay = self.LINK_CHECK_S
+                    continue
+                self._drop_link(robot, stream, "it ended" if not stream.alive else f"no data for {stream.silence:.0f} s")
+            try:
+                self._robot_link(robot)
+            except Exception as e:  # noqa: BLE001 - AppWalk and the REST mirror still work without it
+                if not tries:
+                    self._event("warn", f"robot link not available ({e}): the shadow simulator and the robot's "
+                                        "watchdog are off until it is; trying again")
+                delay, tries = self.LINK_RETRY_S[min(tries, len(self.LINK_RETRY_S) - 1)], tries + 1
+                continue
+            if self._link_lost:
+                self._event("info", "robot link is back")
+            self._link_lost, tries, delay = False, 0, self.LINK_CHECK_S
+            if not shadow:
+                shadow = True
+                threading.Thread(target=self._shadow_loop, args=(robot, stop), name="ctl-shadow", daemon=True).start()
+
+    def _drop_link(self, robot, stream, why):
+        with self._lock:
+            if self._link is not None and self._link[1] is stream:
+                self._link = None
+            if robot.rest.relay == stream.rest:
+                robot.rest.relay = None
+            self._link_lost = True
+            if self.balance:
+                self._balance_robot = "off: robot link lost (back on when it reconnects)"
+        self._event("warn", f"robot link lost ({why}): reconnecting. Walk commands go direct meanwhile; a robot that "
+                            f"hears nothing from the laptop for {self.link_watchdog_s:g} s while walking stops itself")
+        self._s2r_write("link_lost", why=why)
+        threading.Thread(target=stream.close, name="ctl-link-close", daemon=True).start()
+
+    def _on_robot_watchdog(self, d):
+        """The robot's watchdog stopped it: it heard nothing from the laptop while walking or turning."""
+        what = "stopped walking" if d.get("wd") == "stop" else "left its gait (still walking 3 s after the stop)"
+        self._event("warn", f"the robot {what} by itself: nothing from the laptop for {d.get('silent')} s (Wi-Fi?)")
+
+    def _on_robot_motion(self, path, status, rt=None):
+        """hal started or ended an .hts motion (a turn, its ResetSwitch, a get-up): the shadow plays the same file."""
+        shadow, link = self._shadow, self._link
+        if shadow is None or not shadow.active or link is None:
+            return
+        off = link[1].clock_offset() if rt is not None else None
+        due = None if off is None else rt - off + self.SHADOW_DELAY_S
+        if status != "start":
+            shadow.stop_motion(due)
+            return
+        threading.Thread(target=self._shadow_motion, args=(shadow, link[1], path, due), daemon=True).start()
+
+    def _shadow_motion(self, shadow, stream, path, due):
+        try:
+            local = hts_copy(path, stream.host)
+            name = os.path.splitext(os.path.basename(path))[0]
+            shadow.play_motion(name, hts.load(local)["frames"], due)
+            self._s2r_write("shadow_motion", path=path, frames_from=os.path.relpath(local, ROOT))
+        except Exception as e:  # noqa: BLE001 - the shadow just misses this motion
+            log.warning("shadow motion %s: %s", path, e)
+
+    SHADOW_DELAY_S = 0.15  # the firmware's frames reach the shadow at the robot's own time plus this (link jitter)
+
+    def _on_robot_frame(self, angles, ms, src, ours, rt=None):
+        shadow, link = self._shadow, self._link
+        if shadow is None:
+            return
+        off = link[1].clock_offset() if link is not None and rt is not None else None
+        shadow.feed(angles, ms, due=None if off is None else rt - off + self.SHADOW_DELAY_S)
 
     def _shadow_reset(self):
         """A walk starts on the robot: stand the shadow up in the robot's pose."""
@@ -1474,7 +1741,7 @@ class Controller:
             if use_robot:
                 self._stat(self._robot_method_name()).command(kind)
             if use_sim:
-                self._stat("SwayStep (sim)").command(kind)
+                self._stat(f"{self._robot_method_name()} (sim)").command(kind)
         except OSError as e:
             log.warning("walk stats: %s", e)
 
@@ -1486,12 +1753,17 @@ class Controller:
     ROBOT_GETUP = {"front": recovery.GETUP["face_down"], "rear": recovery.GETUP["on_back"]}
 
     def get_up(self):
-        """Stand up after a fall. Robot (robot/both modes): ROBOT_GETUP for the posture the robot's own IMU reports
-        (euler-x about 0 face down, about 180 on the back), then reset if the motion ends crouched and no servo is
-        stall-locked; the twin follows. Sim: motions/builtin/getup_front.json / getup_rear.json (the same robot
-        motions); when the sim is still down 1.5 s after it, respawn() stands it up and an event says so."""
+        """Stand up after a fall, ending where the Reset button ends (RESET_POSE). Robot (robot/both modes):
+        ROBOT_GETUP for the posture the robot's own IMU reports (euler-x about 0 face down, about 180 on the back),
+        the robot's reset motion after one that ends crouched (unless a servo is stall-locked), then, if it stands,
+        the Reset button's move; the twin follows. Sim: motions/builtin/getup_front.json / getup_rear.json (the same
+        robot motions), then the reset pose; when the sim is still down 1.5 s after it, respawn() stands it up and
+        an event says so."""
         gen, use_sim, use_robot, robot = self._snapshot()
         if use_robot:
+            if not self._robot_activity_running() and self._robot_motion_running(robot):
+                return self._fail("get up: the robot is still playing a motion (its own fall manager getting it up?): "
+                                  "wait for it to finish", level="warn")
             res, err = self._call("gyro", robot.rest.gyro)
             if err:
                 return self._fail(f"get up: cannot read the robot's IMU ({err})")
@@ -1512,7 +1784,7 @@ class Controller:
             if why:
                 return self._fail(f"get up {why}", level="warn")
             act = _Activity("action", f"get up ({posture})", "sim",
-                            duration=(motion_mod.duration_s(mo) + 2.0) if mo else 1.0)
+                            duration=(motion_mod.duration_s(mo) + 2.0 + self.RESET_MOVE_S + 6.0) if mo else 1.0)
 
             def run(a):
                 if mo is not None:
@@ -1525,8 +1797,13 @@ class Controller:
                     self.sim.respawn()
                     self._event("warn", "the simulated robot could not get up by itself and was stood up"
                                 + ("" if mo else f" (no getup_{posture} motion in motions/builtin)"))
-                else:
-                    self._event("info", f"the simulated robot got up from lying {'face down' if posture == 'front' else 'on its back'}")
+                    return
+                self.sim.set_servos_angles(dict(RESET_POSE), 1000)  # end where Reset ends (Base_GetupF ends crouched)
+                self.sim.wait(self.RESET_MOVE_S)
+                back = self._sim_recenter(a)  # a leg left splayed (the loaded foot gripped the floor): step it in
+                self._event("info" if back else "warn",
+                            f"the simulated robot got up from lying {'face down' if posture == 'front' else 'on its back'}"
+                            + (" and stands in the reset pose" if back else ", but a leg is still splayed: press Reset"))
             if self._launch(act, run, gen) is None:
                 return self._fail("get up cancelled by STOP", level="warn")
         return {"ok": True, "target": "sim", "posture": posture, "motion": mo is not None}
@@ -1549,28 +1826,54 @@ class Controller:
                 self._undo_robot(robot)
                 return self._fail("get up cancelled by STOP", level="warn")
             total_s = ((res.get("data") or {}).get("total_time") or 0) / 1000 or None
-            act = _Activity("action", f"get up ({motion})", target, duration=(total_s or 8.0) + (2.5 if then_reset else 0.0),
+            act = _Activity("action", f"get up ({motion})", target,
+                            duration=(total_s or 8.0) + (2.5 if then_reset else 0.0) + self.RESET_MOVE_S,
                             twin=use_sim, detail="sim follows the robot" if use_sim else "")
             act.robot_name, act.version = motion, "v1"
 
             def run(a):
-                if not self._wait_robot_motion(a, robot, "v1", total_s or 0) or a.stop.is_set() or not then_reset:
+                if not self._wait_robot_motion(a, robot, "v1", total_s or 0) or a.stop.is_set():
                     return
-                locked = self._locked_servos(robot)
-                if locked:
-                    self._event("warn", f"get up: {', '.join(locked)} stall-locked while closing the crouch (grippy floor), "
-                                        "so no reset: lay the robot down, switch those servos to program mode, then Reset")
+                if then_reset:  # Base_GetupF ends in a wide crouch: the robot's own reset closes it (as tested)
+                    locked = self._locked_servos(robot)
+                    if locked:
+                        self._event("warn", f"get up: {', '.join(locked)} stall-locked while closing the crouch (grippy "
+                                            "floor), so no reset: lay the robot down, switch those servos to program mode, "
+                                            "then Reset")
+                        return
+                    r, e = self._call("get up reset", lambda: robot.play_builtin("reset"))
+                    if e:
+                        self._event("warn", e)
+                        return
+                    if not self._wait_robot_motion(a, robot, "v1", ((r.get("data") or {}).get("total_time") or 1200) / 1000):
+                        return
+                if a.stop.is_set():
                     return
-                r, e = self._call("get up reset", lambda: robot.play_builtin("reset"))
+                res, e = self._call("gyro", robot.rest.gyro)
+                try:
+                    ex = float(((res.get("data") or {}).get("gyro") or [{}])[0].get("euler-x", 90)) if not e else None
+                except (TypeError, ValueError):
+                    ex = None
+                if ex is not None and recovery.posture(ex) != "upright":
+                    self._event("warn", f"get up: {motion} did not stand the robot up (euler-x {ex:+.0f}): no reset move")
+                    return
+                # then exactly where the Reset button ends: RESET_POSE through the gate (GetupRear ends a degree or
+                # two off it, the reset motion's arms too)
+                warn, e = self._robot_reset_pose(robot, True)
+                for m in (warn, e):
+                    if m:
+                        self._event("warn", f"get up: {m}")
                 if e:
-                    self._event("warn", e)
                     return
-                self._wait_robot_motion(a, robot, "v1", ((r.get("data") or {}).get("total_time") or 1200) / 1000)
+                a.stop.wait(self.RESET_MOVE_S)
+                problem = self._robot_recenter(a, robot)  # a leg left splayed: step it in, then the reset pose
+                if problem:
+                    self._event("warn", f"get up: {problem}")
             if self._launch(act, run, gen) is None:
                 self._undo_robot(robot)
                 return self._fail("get up cancelled by STOP", level="warn")
-        self._event("info", f"get up: the robot plays {motion}" + (" then reset" if then_reset else "")
-                    + f" (lying {'face down' if front else 'on its back'})")
+        self._event("info", f"get up: the robot plays {motion}" + (", its reset" if then_reset else "")
+                    + f" and ends in the reset pose (lying {'face down' if front else 'on its back'})")
         return {"ok": True, "target": target, "posture": "front" if front else "rear", "motion": motion}
 
     @staticmethod
@@ -1583,6 +1886,43 @@ class Controller:
         self.auto_get_up = bool(enable)
         self._event("info", f"auto get-up {'on' if self.auto_get_up else 'off'} (real robot, after a fall)")
         return {"ok": True, "auto_get_up": self.auto_get_up}
+
+    def set_balance(self, enable):
+        """IMU balance (yanshee_sim.balance: ankle corrections from the torso's lean) on AppWalk. In the simulator: its
+        walks and turns. On the robot: its walk (the firmware gait's frames get the corrections on the robot itself,
+        no Wi-Fi in the loop), only through the robot link and only after tools/robot_checks.py balance found the ankle
+        and IMU signs as in the simulator. Its turns then go through the robot link's node, which plays TurnLeft/
+        TurnRight itself with the balance (hal's own playback of the .hts cannot be corrected)."""
+        self.balance = bool(enable)
+        robot = self._apply_robot_balance()
+        self._event("info", f"balance {'on' if self.balance else 'off'}: simulator {'on' if self.balance else 'off'}, "
+                            f"robot {robot}")
+        return {"ok": True, "balance": self.balance, "robot": robot}
+
+    def _balance_checked(self):
+        """The latest tools/robot_checks.py balance result on this laptop passed."""
+        files = sorted(glob.glob(os.path.join(self._dump_dir(), "balance_*.json")))
+        try:
+            with open(files[-1]) as f:
+                return json.load(f).get("ok") is True
+        except (IndexError, OSError, ValueError):
+            return False
+
+    def _apply_robot_balance(self):
+        link = self._link
+        if link is None or not link[1].alive:
+            self._balance_robot = "off: no robot link" if self.balance else "off"
+            return self._balance_robot
+        want = self.balance and self._balance_checked()
+        try:
+            link[1].set_balance(want)
+        except (RuntimeError, OSError, ValueError) as e:
+            self._balance_robot = f"off: {e}"
+            return self._balance_robot
+        self._balance_robot = "on" if want else (
+            "off: run tools/robot_checks.py balance --ip IP first (are the ankle and IMU signs as in the simulator?)"
+            if self.balance else "off")
+        return self._balance_robot
 
     def _robot_fall_loop(self, robot, stop):
         """Watch the real robot's IMU 4 times a second; report falls and, with auto_get_up, recover from them."""
@@ -1597,12 +1937,18 @@ class Controller:
             except Exception:  # noqa: BLE001 - the twin loop reports an unreachable robot
                 continue
             self._robot_posture = recovery.posture(ex, ey)
-            ev = det.feed(time.monotonic(), ex, rate, ey, active=self._robot_activity_running())
+            now = time.monotonic()
+            self._imu_hist.append((now, ex, ey, rate))
+            if self._robot_posture == "upright" and rate < 5 and not self._robot_activity_running():
+                ref = self._stand_ref or (ex, ey)  # the lean it stands at, for the settle gate
+                self._stand_ref = (0.9 * ref[0] + 0.1 * ex, 0.9 * ref[1] + 0.1 * ey)
+            ev = det.feed(now, ex, rate, ey, active=self._robot_activity_running())
             if ev is None or self._recovering:
                 continue
             where = ev["posture"].replace("_", " ")
             if self.mode in ("robot", "both"):
-                down = time.time() - (time.monotonic() - ev["down_t"])
+                began = ev.get("up_t") or ev["down_t"]  # when it was last upright: what it was doing then
+                down = time.time() - (time.monotonic() - began)
                 self._stat(self._robot_method_name()).fall(ev["posture"], ev["fell"], at=down)
             if not ev["fell"]:
                 self._event("info", f"the robot is lying {where} (laid down, not a fall: no automatic get-up)")
@@ -1613,8 +1959,48 @@ class Controller:
                 self._recovering = True
                 threading.Thread(target=self._auto_recover, args=(robot,), name="ctl-autogetup", daemon=True).start()
 
+    FIRMWARE_GETUP_WAIT_S = 30.0  # longest the firmware's own get-up may take (GetupFront about 14 s)
+
+    def _robot_motion_running(self, robot):
+        """True while the robot plays a motion or hal's fall flag is set (the firmware's fall manager getting it up,
+        a turn's ResetSwitch, a built-in): hal's monitor through the robot link when it is up, else REST."""
+        link = self._link
+        stream = link[1] if link is not None and link[0] is robot and link[1].alive else None
+        if stream is not None and stream.turning:  # the node's own turn (and its ResetSwitch)
+            return True
+        hal = stream.hal if stream is not None else None
+        if hal and ((hal.get("fall") or {}).get("data") or "run" in ((hal.get("move") or {}).get("status") or [])):
+            return True
+        res, err = self._call("motion state", robot.rest.motion_state)
+        return not err and isinstance(res.get("data"), dict) and res["data"].get("status") == "run"
+
+    def _wait_firmware_getup(self, robot):
+        """With fall management on, hal plays GetupFront/GetupRear by itself on a fall, and our get-up is refused
+        meanwhile (motion engine rc 5, seen 29 Oct 2026). Wait for it: True if it stood the robot up."""
+        t0, seen = time.monotonic(), False
+        while time.monotonic() - t0 < self.FIRMWARE_GETUP_WAIT_S:
+            busy = self._robot_motion_running(robot)
+            seen = seen or busy
+            if not busy and (seen or time.monotonic() - t0 > 3.0):
+                break
+            time.sleep(0.5)
+        if not seen:
+            return False
+        time.sleep(1.0)
+        ex, ey, _ = recovery.read_imu(robot.rest, with_y=True)
+        p = recovery.posture(ex, ey)
+        if p == "upright":
+            self._event("info", "the robot's own fall manager stood it up")
+            self._stat(self._robot_method_name()).getup(True, "firmware fall manager")
+            return True
+        self._event("warn", f"the robot's own get-up left it {p.replace('_', ' ')}: trying ours")
+        self._stat(self._robot_method_name()).getup(False, f"firmware fall manager: still {p}")
+        return False
+
     def _auto_recover(self, robot):
         try:
+            if self._wait_firmware_getup(robot):
+                return
             for attempt in (1, 2):
                 r = self.get_up()
                 if not r.get("ok"):
@@ -1717,10 +2103,26 @@ class Controller:
         return {"ok": True, "walking": walking}
 
     def _wait_robot_gait(self, act, robot):
+        """AppWalk on the robot until stopped. A movement left pending by the settle gate (a start too soon after the
+        last stop, a walk<->turn switch) is started here once the robot has settled and no motion (a turn's
+        ResetSwitch) is playing."""
         t0, seen = time.monotonic(), False
         last_ok = t0
         while not act.stop.wait(0.3):
             p = act.params
+            if p.get("_pending"):
+                if not self._robot_settled() or self._robot_motion_running(robot):
+                    act.detail = "robot: AppWalk, waiting for it to settle after the last stop"
+                    act.keepalive()  # the wait does not use up the lease: a key press still gets its full turn
+                    continue
+                p["_pending"] = False
+                act.keepalive()
+                res, err = self._call("gait", lambda: self._robot_walk_send(robot, {}, p, True))
+                if err:
+                    raise RuntimeError(err)
+                act.detail = "robot: AppWalk, the sim mirrors it"
+                t0, seen = time.monotonic(), False
+                continue
             if p.get("turn") and not p.get("speed_v") and not p.get("speed_h"):
                 continue  # turning with TurnLeft/TurnRight (AppWalk): no gait running, wait for the release
             res, err = self._call("gait state", robot.rest.gait_state)
@@ -1737,14 +2139,20 @@ class Controller:
             elif status in (3, 5, 7, 8) and (seen or time.monotonic() - t0 > 1.5):
                 break
         p = act.params
+        if p.get("_pending"):
+            return  # nothing was started since the last stop (that stop was already sent)
         if act.stop.is_set() and not act.hard:
             # a normal stop (release, gait_stop, lost lease): the mobile app's stop, a gait command with every value 0
-            self._call("gait stop", lambda: robot.rest.gait(0, 0, 0, 0, p.get("wave", False)))
+            self._s2r_write("walk_cmd", v=0, h=0, turn=0, period=0, wave=p.get("wave", False))
+            self._call("gait stop", lambda: self._robot_turn_release(robot, p, p.get("wave", False)))
         else:
+            if p.get("_turn_node"):
+                self._call("turn stop", lambda: self._link[1].turn("!"))
             self._call("gait exit", robot.rest.gait_exit)
+        self._robot_stop_t = time.monotonic()
 
     def gait_stop(self):
-        """Stop walking: the sim fades its stride out (SimGait.STOP_S), a robot walk stops the mobile app's way (a gait
+        """Stop walking: the sim finishes its step and stands up as the firmware does (AppWalk), a robot walk stops the mobile app's way (a gait
         command with every value 0). STOP (stop_all) exits at once instead. A connected robot gets gait_exit whatever the mode (a walk may have
         started just before a mode switch)."""
         act = self._activity

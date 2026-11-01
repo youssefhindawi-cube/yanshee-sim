@@ -16,7 +16,7 @@ class WalkStats:
     getup(ok, message)."""
 
     def __init__(self, method, note="", path=PATH):
-        self.method, self.path, self.lock = method, path, threading.Lock()
+        self.method, self.path, self.lock, self.cmd_lock = method, path, threading.Lock(), threading.RLock()
         self.session = f"{datetime.datetime.now():%Y%m%d_%H%M%S}"
         self.action, self.switch_t, self.switch_kind, self.moving_since = "stop", None, None, None
         self.history = []  # (time, action, switch kind): what the robot was doing when it went down
@@ -29,7 +29,12 @@ class WalkStats:
             f.write(line + "\n")
 
     def command(self, kind):
-        """A movement command; logs a switch when it differs from the current one."""
+        """A movement command; logs a switch when it differs from the current one. Thread-safe: two stops arriving at
+        once (the GUI's release and the lease running out) used to be logged twice."""
+        with self.cmd_lock:
+            self._command(kind)
+
+    def _command(self, kind):
         if kind == self.action:
             return
         now = time.time()
@@ -45,8 +50,13 @@ class WalkStats:
         self.action = kind
 
     def fall(self, posture, fell=True, at=None):
-        """A fall (fell) or the robot found lying after being laid down (not fell). at: when it went down (wall
-        time); it is reported later, once it lies still, so what it was doing is looked up for that moment."""
+        """A fall (fell) or the robot found lying after being laid down (not fell). at: when the fall began (wall
+        time: when it was last upright); it is reported later, once it lies still, so what it was doing is looked up
+        for that moment."""
+        with self.cmd_lock:
+            self._fall(posture, fell, at)
+
+    def _fall(self, posture, fell, at):
         now = time.time()
         action, switch_t, switch_kind = self.action, self.switch_t, self.switch_kind
         if at is not None:

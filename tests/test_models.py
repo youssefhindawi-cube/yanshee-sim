@@ -133,7 +133,7 @@ def test_mat_scene_is_the_same_robot_on_a_grippier_floor():
     from yanshee_sim.robot import SCENE_MAT
     a, b = mujoco.MjModel.from_xml_path(SCENE), mujoco.MjModel.from_xml_path(SCENE_MAT)
     fa, fb = a.geom_friction[a.geom("floor").id], b.geom_friction[b.geom("floor").id]
-    assert fa[0] == 1.0 and fb[0] == 1.4 and (fa[1:] == fb[1:]).all()
+    assert abs(fa[0] - 0.7) < 1e-9 and fb[0] == 1.4 and (fa[1:] == fb[1:]).all()  # smooth floor 0.7 (fitted 1 Nov 2026), mat 1.4
     assert a.nbody == b.nbody and np.allclose(a.body_inertia, b.body_inertia)
     assert np.allclose(a.actuator_forcerange, b.actuator_forcerange)
 
@@ -235,17 +235,23 @@ def test_sim_stop_all_and_respawn():
 
 
 def test_sim_program_mode_is_limp():
+    """'program' = limp: a pushed joint gives way (only its gear friction, 0.08 N m since 29 Oct 2026, resists; gravity
+    alone may not move it, as a geared servo stays put unpowered); 'work' holds against the same push."""
     bot = SimRobot(viewer=False, realtime=False, fixed_base=True)
     arm = ["RightShoulderFlex", "RightElbowFlex"]
     assert bot.set_servos_mode("program", arm)["data"] == {n: True for n in arm}
     assert bot.get_servos_mode(arm + ["NeckLR"])["data"] == {"RightShoulderFlex": "program",
                                                              "RightElbowFlex": "program", "NeckLR": "work"}
-    bot.wait(1.5)
-    sagged = bot.get_servo_angle_value("RightShoulderFlex")
-    assert abs(sagged - RESET_POSE["RightShoulderFlex"]) > 5, "limp arm did not move under gravity"
+    dof = bot.model.jnt_dofadr[bot.model.joint("RightShoulderFlex").id]
+    bot.data.qfrc_applied[dof] = -0.3  # N m, a hand pushing the arm
+    bot.wait(1.0)
+    pushed = bot.get_servo_angle_value("RightShoulderFlex")
+    assert abs(pushed - RESET_POSE["RightShoulderFlex"]) > 5, "limp arm did not give way"
     bot.set_servos_mode("work", arm)
     bot.wait(1.0)
-    assert abs(bot.get_servo_angle_value("RightShoulderFlex") - sagged) <= 2, "work mode did not hold the pose"
+    held = bot.get_servo_angle_value("RightShoulderFlex")
+    bot.wait(1.0)
+    assert abs(bot.get_servo_angle_value("RightShoulderFlex") - held) <= 2, "work mode did not hold against the push"
     bot.close()
 
 

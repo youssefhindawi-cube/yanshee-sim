@@ -8,6 +8,7 @@
     python3 tools/robot_checks.py servo --ip IP              # step response of one arm servo (speed, lag, readback rate)
     python3 tools/robot_checks.py gait --ip IP               # seconds per step for the built-in gait; distance by tape
     python3 tools/robot_checks.py inspect --ip IP            # read-only ssh dump of the Raspberry Pi (+ its .hts files)
+    python3 tools/robot_checks.py balance --ip IP            # ankle -> IMU signs for the balance (B3), before using it
 
 Every mode writes its numbers to robot_dump/<mode>_<time>.json (or robot_dump/inspect_<time>/) so they can be
 turned into simulator constants later. Nothing is written to the robot: inspect only reads and copies files.
@@ -583,6 +584,42 @@ def inspect(args):
     print(f"  full dump: {out}/inspect.txt")
 
 
+# -- balance signs ------------------------------------------------------------------------------------
+BALANCE_DEG = 3.0
+
+
+def balance_check(args):
+    """The robot standing still: the balance's two ankle moves (yanshee_sim.balance.Balance.PITCH and ROLL, +3 deg)
+    one at a time, and which way the IMU says the torso went. The balance runs on the robot only if both go the way
+    they go in the simulator (pitch: forward, roll: left); the GUI reads the latest robot_dump/balance_*.json."""
+    from yanshee_sim.balance import Balance, lean_from_imu
+    rest = YansheeRest(args.ip, timeout=args.timeout)
+    _confirm("Robot standing on the floor in its reset pose, nothing touching it, someone ready to catch it.", args.yes)
+    names = [n for n, _ in Balance.PITCH + Balance.ROLL]
+    base = {n: float(v) for n, v in _ok(rest.get_angles(names), "servo read").items()}
+
+    def lean(seconds=1.0):
+        m = _sample_gyro(rest, seconds)[0]
+        return lean_from_imu((m["euler-x"], m["euler-y"]), (m["gyro-x"], m["gyro-y"], m["gyro-z"]))
+    results = {}
+    for key, pairs, idx, want in (("pitch", Balance.PITCH, 0, -1), ("roll", Balance.ROLL, 1, -1)):
+        before = lean()
+        _ok(rest.set_angles({n: base[n] + s * BALANCE_DEG for n, s in pairs}, runtime=400), "servo move")
+        time.sleep(1.0)
+        after = lean()
+        _ok(rest.set_angles({n: base[n] for n, _ in pairs}, runtime=400), "servo move back")
+        time.sleep(1.0)
+        d = after[idx] - before[idx]
+        ok = d * want > 0.5  # pitch: lean back must drop (forward); roll: lean right must drop (left)
+        results[key] = {"change_deg": round(d, 2), "ok": ok}
+        print(f"  {key}: +{BALANCE_DEG:g} deg on {', '.join(n for n, _ in pairs)} -> lean {'back' if idx == 0 else 'right'} "
+              f"{d:+.1f} deg: {'as in the simulator' if ok else 'NOT as in the simulator'}")
+    ok = all(r["ok"] for r in results.values())
+    print("balance signs " + ("OK: the GUI's Balance can run on the robot" if ok else
+                              "WRONG or unclear: the GUI keeps the robot's balance off (simulator only)"))
+    _save("balance", {"ip": args.ip, "deg": BALANCE_DEG, "results": results, "ok": ok})
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -614,6 +651,8 @@ def main(argv=None):
     p.add_argument("--user", default="pi")
     p.add_argument("--password", default="raspberry")
     p.add_argument("--force", action="store_true", help="run under 50 %% battery")
+    p = sub.add_parser("balance", help="ankle -> IMU signs for the balance, the robot standing")
+    common(p)
     p = sub.add_parser("servo", help="step response of one arm servo")
     common(p)
     p.add_argument("--servo", default="RightShoulderFlex")
@@ -634,7 +673,8 @@ def main(argv=None):
     p.add_argument("--password", default="raspberry")
     args = ap.parse_args(argv)
     try:
-        {"latency": latency, "imu": imu, "gyro": gyro, "fall": fall, "servo": servo, "gait": gait, "inspect": inspect}[args.mode](args)
+        {"latency": latency, "imu": imu, "gyro": gyro, "fall": fall, "servo": servo, "gait": gait, "inspect": inspect,
+         "balance": balance_check}[args.mode](args)
     except KeyboardInterrupt:
         print("\naborted")
         return 130

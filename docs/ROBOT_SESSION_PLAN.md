@@ -146,29 +146,80 @@ add-on sensors, Bluetooth gamepad, HDMI/USB, energy saving, OTA) and the enduran
 
 ## To do
 
+Done on 29 Oct 2026 from the walking session's logs (`docs/SIM2REAL_FINDINGS.md`), still to check on the robot:
+
+- **Settle gate (AppWalk)**: a walk start, a turn start and a walk<->turn switch now wait until the robot has settled
+  after the last stop (at least 1.2 s, IMU within 3 deg of standing for 0.5 s, at most 2.5 s, no ResetSwitch playing).
+  Check: walk, release, press again at once, and switch walk -> turn -> walk, 10 times each; `tools/walk_stats.py`
+  should show no falls around the switches and the robot log no 11-38 deg lean after restarts.
+- **Auto get-up waits for the firmware's get-up**: with fall management on, hal stands the robot up by itself; ours now
+  waits (up to 30 s) and only acts if it is still down. Check: Auto get-up on, a fall on its back and one face down
+  (smooth floor), both with fall management on and off.
+- **Decide fall management for the show**: on, hal plays GetupFront face down (fails on mats, works on a smooth hard
+  floor) and GetupRear on the back; off, our auto get-up plays Base_GetupF + reset / GetupRear. Pick after the check.
+- **Encoder reads pause while hal plays a motion**: check the robot log shows `enc_pause` during a get-up and no
+  "buffer is full" warnings.
+- **Shadow turns and timing**: the shadow now plays the robot's .hts motions (turns, ResetSwitch) and schedules the
+  firmware's frames at the robot's own times; check `tools/sim2real_report.py` turns show a heading in the shadow.
+- **Model refit**: joint damping 0.12, gear friction 0.08, contact friction 0.8 (`tools/build_models.py`), fitted by
+  replaying the 17 AppWalk walks (`tools/sim2real_replay.py`: falls agree 13 -> 16 of 17, pitch 7.6 -> 5.9 deg, roll
+  4.2 -> 3.1 deg) with the get-up fits kept. One session on one floor: validate on new sessions, and on the show floor.
+
+- **Copy the demo's robot log** (29 Oct 2026 19:38, 1 min: 4 AppWalk walks, 2 turns; the robot left the Wi-Fi before
+  the GUI could copy it): `python3 tools/fetch_robot_logs.py --ip 192.168.89.74` (`robot_20261029_193840.jsonl`).
+- **The robot drops off the Wi-Fi**: twice on 29 Oct, about a minute after the link started (once idle, once after 4
+  walks); its own log kept running through the first drop, so the Pi stayed up and only the Wi-Fi went. Check on the
+  Pi: Wi-Fi power saving (`iw dev wlan0 get power_save`), signal (`iwconfig wlan0`), which saved networks it can join
+  (`wpa_cli list_networks`). For the show: a dedicated access point next to the stand.
+- **Latency baseline, then each fix** (`tools/latency_test.py`, docs/SIM2REAL_FINDINGS.md "Link latency"):
+  `--seconds 300 --label baseline`; then `--power-save off --label "power save off"` (lasts until the robot
+  restarts; make it permanent if it helps); then on the travel router with the laptop wired; once, with the GUI
+  disconnected and the robot standing, `--move` (command -> arm servo) and `--relay` (REST through the link: the
+  REST server's own time). Compare: `--compare robot_dump/latency_test_*.json`.
+- **Get up ends in the reset pose** (1 Nov 2026, tested in the simulator and against the fake robot): after the
+  get-up motion (and Base_GetupF's reset) the Reset button's own move; a leg left splayed (hip roll more than 4 deg
+  out, not stall-locked) is stepped in: weight onto the other leg with both ankle rolls (10 deg), the free leg
+  lifted (hip pitch 14 deg), its hip roll back, put down, reset pose, every move slow (2.2x); it stops if the IMU
+  says it tipped. Check on a smooth hard floor, face down and on its back, a hand near the robot: it ends standing
+  straight (encoders within 3 deg of the reset pose); a stepping-in event if a leg was out.
+- **Robot watchdog and link reconnect** (1 Nov 2026, tested only against a fake ROS): with the GUI in Robot mode,
+  walk forward slowly on a clear floor, one person ready to catch it, and turn the laptop's Wi-Fi off: the robot
+  should stop by itself 1.5 s later (the app's stop, then its usual wind-down); the robot's log gets a `watchdog`
+  row. The same holding TurnLeft. Wi-Fi back on: the page shows "link lost, reconnecting", then the event "robot
+  link is back" within about 10 s. Also check the walk commands now go through the link (`relay` rows in the
+  robot's log) and the walk still starts and stops as before.
+
+Still open:
+
+- **Record the AppWalk directions the simulator is missing** (Sim mode refuses them until then): with the GUI in Both
+  mode, walk backward, right and the four diagonals for 5 s each, a few times, stopping at different moments; then
+  `python3 tools/extract_appwalk.py` (the GUI now logs every walk command with its speed and direction). Also walk at
+  the speed used for the show, and measure how far 5 s forward takes the robot (the simulator: 65 cm).
+- **Turning in place in the simulator**: settled for TurnLeft on 1 Nov 2026 (contact friction 0.8 -> 0.7: it no
+  longer falls, leans up to 21 deg as the robot does, docs/SIM2REAL_FINDINGS.md "Turning and IMU balance"); still to
+  compare the turn rate on more robot turns (5 recorded so far, 15-25 deg/s TurnLeft).
+- **Carry-over between walks in the replay**: each walk is replayed from rest, so a walk started while the robot was
+  still swinging (walk 12) cannot match; replay a whole session continuously.
+- **IMU balance on the robot** (built 1 Nov 2026, `yanshee_sim/balance.py`, GUI "Balance"; tested only in the
+  simulator and against a fake ROS): first `python3 tools/robot_checks.py balance --ip IP` (robot standing: two 3 deg
+  ankle moves; the robot's balance stays off unless both lean the torso the way they do in the simulator, which also
+  settles B3). Then, Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
+  push from behind with a finger): `tools/sim2real_report.py` tilt per walk, `bal` rows (the offsets) and `frame` rows
+  with src `balance` in the robot's log; watch for hal warnings ("Read servo angle status timeout") with the extra
+  frames. Turns with the balance on are played by the node (frames with src `turn`, `turn` rows): first hold
+  TurnLeft 2 s with Balance off (hal plays it) and on (the node plays it), the robot on a smooth floor and someone
+  ready to catch it; compare yaw and tilt (robot log IMU), then longer turns (4-6 s, where TurnLeft fell once).
+  Check the release plays ResetSwitch and STOP halts a node turn at once.
 - **Face-down get-up on a mat** (parked 29 Oct 2026): findings, attempts and leads in `docs/GETUP_ON_MATS.md`.
   Until it is solved the stand needs a smooth hard surface.
-- **IMU balance for the firmware walk** (parked 29 Oct 2026): the built-in walk is open-loop (`gait_node` subscribes
-  only to `/motion_planning_speed` and `/teleopkey`, publishes `/hal_angles_set`; nothing but the REST server reads
-  `/hal_gyro_report`, and its binary has no gyro/IMU/balance strings), and it tips over when switching movements the
-  app's way (a turn starts about 0.2 s after the stop, before the last step ends). To do: sequence the switches in
-  `tools/joystick.py` (wait for the gait to report stopped and the IMU to be steady and upright before a turn or a
-  reversal, and for the turn and its ResetSwitch to end before walking), log the tilt around each switch, and decide
-  whether IMU feedback on top of the firmware walk is worth it once our own gait has been compared.
-
-- **Close the sim-to-real gap** (data collection started 29 Oct 2026): with the robot connected in the GUI the robot
-  logs on board, robot clock (`/home/pi/yanshee_logs/robot_<session>.jsonl`, copied to `robot_dump/robot_logs/`):
-  encoders (hal `/hal_servo_read`, 5 per second), IMU with compass (19 per second), every servo frame on
-  `/hal_angles_set` (the firmware walk's and SwayStep's, ours with the laptop's send time), once a second battery,
-  board temperature, motion status, fall flag and LEDs, the servo calibration offsets, every firmware log line. The
-  laptop logs the shadow simulator (physics fed the same frames) and clock pings (`robot_dump/sim2real_<session>.jsonl`).
-  Link measured 29 Oct: round trip 7 ms, our frames late by 3 ms (95 % 11 ms, max 78 ms). `tools/sim2real_report.py`
-  merges the two and sums up each walk: robot vs shadow tilt and falls, frame-to-encoder delay and error, shadow joints vs encoders. To do: collect
-  walks with both methods on the robot's floor, on battery (not charging: about 0.25 V higher on the charger, so the
-  servos are stronger; logged), then fit the model to them: servo strength and speed per joint (from the delay and
-  error), friction, the IMU filter, and check that the shadow falls when the robot falls and only then.
-  Measured so far: hal ignores the head on `/hal_angles_set`; the encoders read in whole degrees and settle about
-  1 deg short of a streamed target.
+- **More sim-to-real data**: every session with the robot connected logs on board (robot clock,
+  `/home/pi/yanshee_logs/`, copied to `robot_dump/robot_logs/`; `tools/fetch_robot_logs.py`) and the shadow on the
+  laptop (`robot_dump/sim2real_<session>.jsonl`); collect AppWalk sessions on battery (the charger adds about 0.25 V)
+  and on the show floor, then rerun `tools/sim2real_replay.py --sweep` on all of them. Known: hal ignores the head on
+  `/hal_angles_set`; encoders read whole degrees and settle about 1 deg short of a target.
+- **SwayStep** is archived on the robot (29 Oct 2026) and in the simulator (1 Nov 2026,
+  `docs/archive/SWAYSTEP_ON_ROBOT.md`); AppWalk is the walk to build on, and the simulator plays the robot's.
+- One get-up log (Base_GetupF 13:20, on the mat) still disagrees: the simulator stands, the robot did not.
 
 ## What this still cannot settle
 

@@ -79,6 +79,11 @@ class YansheeRest:
         self.timeout = float(timeout)
         self.base = f"http://{self.host}:{self.port}/v1/"
         self.poll_interval = 0.3  # seconds between polls in vision/asr/iat
+        # relay(method, path, body json, timeout) -> (status, content, content type, ...): set while the robot link is
+        # up (robot_stream.RobotStream.rest) so the RELAYED calls go through it; on any failure they go direct
+        self.relay = None
+
+    RELAYED = ("motions/gait", "motions")  # AppWalk's walk, turn and stop commands, and motion start/stop
 
     def __repr__(self):
         return f"YansheeRest('{self.host}:{self.port}')"
@@ -94,6 +99,15 @@ class YansheeRest:
         if params:
             url += "?" + urllib.parse.urlencode(params, doseq=True)  # lists repeat the key, like requests
         hdrs = {"Content-Type": "application/json"}
+        relay = self.relay
+        if relay is not None and path in self.RELAYED and not (params or raw or data or headers):
+            try:
+                status, content, ctype = relay(method, path, json.dumps(body) if body is not None else None,
+                                               timeout or self.timeout)[:3]
+            except Exception:  # noqa: BLE001 - the link is down, quiet or slow: the direct connection below
+                pass
+            else:
+                return self._reply(method, path, status, content, ctype)
         if body is not None:
             data = json.dumps(body).encode()
         if headers:
@@ -108,20 +122,23 @@ class YansheeRest:
             except Exception:
                 content = b""
             status, ctype = e.code, e.headers.get("Content-Type", "") if e.headers else ""
-            try:
-                res = json.loads(content.decode("utf-8"))
-                if isinstance(res, dict):
-                    return res
-            except ValueError:
-                pass
-            raise RobotProtocolError(f"{method} {path}: HTTP {status} from {self.host}:{self.port}: "
-                                     f"{content[:120]!r}") from None
         except (urllib.error.URLError, OSError) as e:  # refused, timeout, reset, DNS, no route
             reason = getattr(e, "reason", None) or e or type(e).__name__
             raise RobotUnreachable(f"{method} {path}: no answer from {self.host}:{self.port} ({reason})") from None
         except http.client.HTTPException as e:  # garbage instead of an HTTP reply
             raise RobotProtocolError(f"{method} {path}: bad HTTP reply from {self.host}:{self.port} "
                                      f"({type(e).__name__}: {e})") from None
+        return self._reply(method, path, status, content, ctype, raw)
+
+    def _reply(self, method, path, status, content, ctype, raw=False):
+        if status >= 400:  # the robot answered with an HTTP error status: its JSON reply if it sent one
+            try:
+                res = json.loads(content.decode("utf-8"))
+                if isinstance(res, dict):
+                    return res
+            except ValueError:
+                pass
+            raise RobotProtocolError(f"{method} {path}: HTTP {status} from {self.host}:{self.port}: {content[:120]!r}")
         if raw:
             return content, ctype
         try:

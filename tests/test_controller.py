@@ -278,8 +278,10 @@ def test_controller_gait_update_and_stop():
     r = c.gait(3, 0, steps=0)
     assert r["ok"] and not r["updated"]
     assert wait_until(lambda: "steps" in c.state()["activity"]["detail"], 5)
-    assert c.gait(-2, 1)["updated"]
-    assert c._activity.params["speed_v"] == -2
+    r = c.gait(-2, 0)  # the simulator walks the robot's recorded AppWalk: backward is not recorded yet
+    assert r["ok"] is False and "not been recorded walking backward" in r["error"]
+    assert c.gait(0, 2)["updated"]
+    assert c._activity.params["speed_h"] == 2
     assert c.gait(9, 0)["ok"] is False and c.gait(1.5, 0)["ok"] is False
     assert c.gait_stop()["ok"]
     assert c.state()["activity"]["kind"] == "idle" and not c._fallen
@@ -456,6 +458,19 @@ def test_get_up_and_balance():
         names = lambda: [e[3].get("motion", {}).get("name") or e[3].get("name") for e in requests(srv, "PUT", "motions")]  # noqa: E731
         assert wait_until(lambda: "Base_GetupF" in names(), 5)
         assert wait_until(lambda: "reset" in names(), 15), names()  # it ends crouched: reset follows when nothing is locked
+        # then the Reset button's own move: RESET_POSE through the gate
+        assert wait_until(lambda: c2.state()["activity"]["kind"] == "idle", 15)
+        moves = [e[3].get("angles") or {} for e in requests(srv, "PUT", "servos/angles")]
+        assert moves and all(abs(moves[-1][n] - RESET_POSE[n]) <= 1 for n in RESET_POSE), moves[-1:]
+        # a leg left splayed (the foot gripped the floor): it is stepped in, weight on the other leg first
+        srv.state.move_by_hand({"RightHipLR": 50})
+        n0 = len(requests(srv, "PUT", "servos/angles"))
+        a = type("A", (), {"stop": threading.Event()})()
+        assert c2._robot_recenter(a, c2.robot) is None
+        moves = [e[3].get("angles") or {} for e in requests(srv, "PUT", "servos/angles")][n0:]
+        steps = [m for m in moves if len(m) < len(RESET_POSE)]  # (the locked-servo check commands the whole readback)
+        assert steps[0]["RightAnkleUD"] > 95 and steps[0]["LeftAnkleUD"] > 95, steps  # lean left: weight off the right
+        assert steps[2] == {"RightHipLR": 90} and all(abs(moves[-1][n] - RESET_POSE[n]) <= 1 for n in RESET_POSE)
 
 
 def test_tip_over_then_get_up():
@@ -473,6 +488,10 @@ def test_tip_over_then_get_up():
         r = c.get_up()
         assert r["ok"] and r["posture"] == ("front" if direction == "front" else "rear"), r
         assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 20)
+        legs = [n for n in RESET_POSE if "Hip" in n or "Knee" in n or "Ankle" in n]
+        got = c.sim._read(legs)  # it ends where Reset ends (Base_GetupF alone ends in a wide crouch)
+        assert all(abs(got[n] - RESET_POSE[n]) <= 5 for n in legs), (direction, {n: got[n] - RESET_POSE[n] for n in legs},
+                                                                   dict(zip(legs, (c.sim.get_servos_angles(legs)["data"][n] for n in legs))))
     assert c.tip_over("front")["ok"]  # standing again: a new push is accepted
     assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
     assert c.get_up()["ok"]
@@ -482,13 +501,16 @@ def test_tip_over_then_get_up():
 
 
 def test_gait_direction_changes_do_not_tip():
-    """A second key during a walk, or a reversal, must not throw the robot: the gait ramps every change."""
+    """A new direction during a walk: AppWalk stops the walk the firmware's way and starts the new one; the
+    simulator must not tip."""
     c = ctl()
+    c.sim.respawn()  # from standing, whatever the test before left
+    time.sleep(0.5)
     assert c.gait(5, 0, steps=0, lease_s=30)["ok"]
     time.sleep(2.0)
-    assert c.gait(5, -5, steps=0, lease_s=30)["updated"]  # forward -> forward + right
-    time.sleep(2.0)
-    assert c.gait(-5, 0, steps=0, lease_s=30)["updated"]  # -> backward
+    assert c.gait(0, 5, steps=0, lease_s=30)["updated"]  # forward -> left
+    time.sleep(3.0)
+    assert c.gait(5, 0, steps=0, lease_s=30)["updated"]  # -> forward again
     time.sleep(2.5)
     assert c.gait_stop()["ok"] and wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
     assert not c.state()["sim"]["fallen"] and c.sim.torso_tilt_deg() < 15
@@ -510,8 +532,9 @@ def test_robot_gait_stop_like_the_app():
         srv.state.log.clear()
         assert c.stop_all()["ok"]
         assert not requests(srv, "PUT", "motions/gait") and requests(srv, "DELETE", "motions/gait")
-        assert c.gait(1, 0, steps=0)["ok"]
-        assert wait_until(lambda: c.state()["activity"]["kind"] == "gait", 5)
+        srv.state.log.clear()
+        assert c.gait(1, 0, steps=0)["ok"]  # right after STOP: started once the robot has settled (settle gate)
+        assert wait_until(lambda: any(e[3].get("speed_v") == 1 for e in requests(srv, "PUT", "motions/gait")), 5)
         srv.state.log.clear()
         assert c.gait_stop()["ok"] and [e[3]["period"] for e in requests(srv, "PUT", "motions/gait")] == [0]
 
@@ -980,8 +1003,8 @@ def test_soak_sim():
     first_id = c.events_since(0)[-1]["id"] if c.events else 0
     plan = [("action", ("wave", "both")), ("gait", (4, 0, 6)), ("action", ("crouch", "")),
             ("action", ("bend", "left")), ("gait", (0, 3, 4)), ("action", ("raise", "both")),
-            ("gait", (-3, 0, 4)), ("action", ("bow", "")), ("action", ("come on", "right")),
-            ("gait", (2, -2, 4)), ("action", ("stretch", "left")), ("action", ("head", "right")),
+            ("gait", (4, 0, 4)), ("action", ("bow", "")), ("action", ("come on", "right")),
+            ("gait", (0, 2, 4)), ("action", ("stretch", "left")), ("action", ("head", "right")),
             ("action", ("reset", ""))]
     max_tilt, i, t_end = 0.0, 0, time.monotonic() + seconds
     while time.monotonic() < t_end:
@@ -1030,12 +1053,55 @@ def test_both_mode_mirrors_the_robot():
         assert wait_until(lambda: not c.sim.mirroring, 3), "Sim mode must give the physics back"
 
 
-def test_walk_method_setting():
+def test_walk_method_setting(monkeypatch):
     c = ctl()
     assert c.set_walk_method("jog")["ok"] is False
+    r = c.set_walk_method("sway")  # archived
+    assert r["ok"] is False and "archived" in r["error"] and c.walk_method == "app"
+    monkeypatch.setenv("YANSHEE_ALLOW_SWAY", "1")
     assert c.set_walk_method("sway")["walk_method"] == "sway" and c.walk_method == "sway"
-    assert c.gait(1, 0, steps=0, lease_s=2.0)["ok"]  # sim mode: SwayStep in the sim whatever the robot method
+    assert c.gait(-1, 0, steps=0, lease_s=2.0)["ok"]  # SwayStep walks the simulator in every direction
+    assert wait_until(lambda: "SwayStep" in c.state()["activity"]["detail"], 5)
     assert c.set_walk_method("app")["ok"] is False  # not while walking
     c.gait_stop()
     assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
     assert c.set_walk_method("app")["ok"] and c.walk_method == "app"
+
+
+def test_sim_walks_the_robots_appwalk():
+    """Sim mode walks the robot's recorded AppWalk: forward moves it forward without a fall; a direction the robot
+    has not been recorded walking is refused, for the hold-to-walk gait and the built-in walk action."""
+    c = ctl()
+    assert c.walk_method == "app"
+    c.reset()
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    y0 = float(c.sim.data.xpos[c.sim.model.body("base_link").id][1])
+    assert c.gait(3, 0, steps=0, lease_s=30)["ok"]
+    assert wait_until(lambda: "AppWalk" in c.state()["activity"]["detail"], 5)
+    time.sleep(3.0)
+    assert c.gait_stop()["ok"] and wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    assert not c.state()["sim"]["fallen"]
+    assert float(c.sim.data.xpos[c.sim.model.body("base_link").id][1]) - y0 > 0.1  # model y = forward, m
+    r = c.play_action("walk", "backward")
+    assert r["ok"] is False and "not been recorded walking backward" in r["error"]
+
+
+def test_balance_setting(tmp_path, monkeypatch):
+    """Balance: on in the simulator at once; the robot side stays off without a link and without a passing
+    tools/robot_checks.py balance result."""
+    c = ctl()
+    monkeypatch.setenv("YANSHEE_DUMP_DIR", str(tmp_path))
+    r = c.set_balance(True)
+    assert r["ok"] and r["balance"] and r["robot"].startswith("off")
+    assert c.state()["robot"]["balance"] is True
+    assert not c._balance_checked()
+    (tmp_path / "balance_20261101_120000.json").write_text('{"ok": false}')
+    assert not c._balance_checked()
+    (tmp_path / "balance_20261101_130000.json").write_text('{"ok": true}')
+    assert c._balance_checked()
+    c.reset()
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    assert c.gait(2, 0, steps=6)["ok"]  # the simulator walks with it
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 15)
+    assert not c.state()["sim"]["fallen"] and c.sim._offsets == {}
+    assert c.set_balance(False)["balance"] is False

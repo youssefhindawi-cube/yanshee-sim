@@ -64,15 +64,25 @@ stop.onclick=()=>{release();post('/stop')};tl.onclick=()=>post('/turn',{dir:'lef
 
 
 class Walker:
-    """The robot's gait, updated only when the speeds change, stopped gently on release or a lost heartbeat."""
+    """The robot's gait, updated only when the speeds change, stopped gently on release or a lost heartbeat. A new
+    walk or turn waits SETTLE_S after the last stop (the robot's log, 29 Oct 2026: restarts within 1.5 s of a stop
+    caught it still swinging and leaned it back 11-38 deg; left alone it settled within 1.5 s). The GUI does the same
+    with the IMU (Controller._robot_settled)."""
+
+    SETTLE_S = 1.5
 
     def __init__(self, rest, log, stats=None):
         self.rest, self.log, self.lock, self.stats = rest, log, threading.Lock(), stats
-        self.cur, self.last = None, 0.0  # (v, h, wave) while walking
+        self.cur, self.last, self.stopped_at = None, 0.0, None  # (v, h, wave) while walking; when the last stop went
         self.turning, self.turn_sent = None, 0.0  # the turn motion resent while the knob is held left/right
         self.auto, self.status, self.busy = True, "ready", False
         threading.Thread(target=self._watchdog, daemon=True).start()
         threading.Thread(target=self._fall_watch, daemon=True).start()
+
+    def _settle(self):
+        """Wait (holding the lock) until SETTLE_S after the last stop."""
+        if self.stopped_at is not None:
+            time.sleep(max(0.0, self.SETTLE_S - (time.monotonic() - self.stopped_at)))
 
     def note(self, text):
         line = f"{datetime.datetime.now():%H:%M:%S.%f}"[:-3] + " " + text
@@ -90,7 +100,10 @@ class Walker:
             want = (max(-5, min(5, int(v))), max(-5, min(5, int(h))), bool(wave))
             if want[:2] == (0, 0):
                 return self._stop("centred")
-            self.turning = None  # walking after a turn: the gait takes over, as in the app
+            if self.turning:  # walking after a turn: end the turn (ResetSwitch follows) and let it settle first
+                self._stop("before walking")
+            if self.cur is None:
+                self._settle()
             if self.stats:
                 self.stats.command("diag" if want[0] and want[1] else "side" if want[1] else "walk+" if want[0] > 0 else "walk-")
             if want == self.cur:
@@ -110,6 +123,7 @@ class Walker:
         if self.stats:
             self.stats.command("stop")
         res = self.rest.gait(0, 0, 0, 0, bool(was and was[2]))  # the app's stop: a gait command with every value 0
+        self.stopped_at = time.monotonic()
         return self.note(f"{why}: stop{' from v=%d h=%d' % was[:2] if was else ' after turning'}: {res.get('msg')}")
 
     def turn_hold(self, direction, wave=True):
@@ -123,6 +137,10 @@ class Walker:
             name = "TurnLeft" if direction == "left" else "TurnRight"
             if self.turning == name and time.monotonic() - self.turn_sent < 0.4:
                 return f"turning {direction}"
+            if self.turning and self.turning != name:
+                self._stop("turning the other way")
+            if self.turning != name:
+                self._settle()
             res = self.rest.motion_control("start_async", name, "v1", "left", "normal", 0, int(time.time() * 1000))
             first = self.turning != name
             self.turning, self.turn_sent = name, time.monotonic()

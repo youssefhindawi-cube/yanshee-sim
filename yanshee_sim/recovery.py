@@ -1,8 +1,9 @@
 """Fall detection and recovery for the real robot.
 
-The firmware's own fall management does not help on our robot (its on/off setting never reached the hal node, it
-ignores falls it blames on people, and face down it plays GetupFront, which fails on mats: docs/GETUP_ON_MATS.md),
-so this watches the IMU itself. A fall is the robot going from upright to lying (face down or on its back) within
+The firmware's own fall management is unreliable on our robot: in the morning of 29 Oct 2026 its on/off setting never
+reached the hal node; in the evening, with it on, hal did detect every fall and played GetupFront/GetupRear itself
+(face down GetupFront fails on mats: docs/GETUP_ON_MATS.md). So this watches the IMU itself, and the controller's auto
+get-up waits for a get-up the firmware is already playing before it plays its own. A fall is the robot going from upright to lying (face down or on its back) within
 FALL_S and then lying still: being laid down slowly by hand is reported but is not a fall, so an automatic get-up
 never starts in someone's hands. The get-ups are the ones verified on the robot on 29 Oct 2026.
 """
@@ -41,7 +42,7 @@ class FallDetector:
 
     def __init__(self, fall_s=FALL_S, still_s=STILL_S, still_dps=STILL_DPS):
         self.fall_s, self.still_s, self.still_dps = fall_s, still_s, still_dps
-        self.last_upright = self.down_since = self.still_since = self.last_active = None
+        self.last_upright = self.down_since = self.still_since = self.last_active = self.up_t = None
         self.fell = self.reported = False
 
     def feed(self, t, euler_x, gyro_dps=0.0, euler_y=0.0, active=False):
@@ -54,13 +55,15 @@ class FallDetector:
         if p == "tilted":
             return None
         if self.down_since is None:
-            self.down_since = t
+            self.down_since, self.up_t = t, self.last_upright
             self.fell = (self.last_upright is not None and t - self.last_upright <= self.fall_s) or \
                 (self.last_active is not None and t - self.last_active <= ACTIVE_S)
         self.still_since = (self.still_since or t) if gyro_dps < self.still_dps else None
         if not self.reported and self.still_since is not None and t - self.still_since >= self.still_s:
             self.reported = True
-            return {"posture": p, "fell": self.fell, "down_t": self.down_since}
+            # down_t: when it was first seen down; up_t: when it was last upright, i.e. when the fall began (what the
+            # robot was doing then caused it; a stop sent while it was already going over did not)
+            return {"posture": p, "fell": self.fell, "down_t": self.down_since, "up_t": self.up_t}
         return None
 
 
@@ -123,3 +126,42 @@ def robot_get_up(rest, lying, stop=None):
     ex, _ = read_imu(rest)
     p = posture(ex)
     return p == "upright", f"{motion}{' + reset' if then_reset else ''}: {'standing' if p == 'upright' else 'still ' + p} (euler-x {ex:+.0f})"
+
+
+# -- bringing a splayed leg back in ---------------------------------------------------------------------------------
+# After Base_GetupF the wide crouch does not always close: the loaded foot grips the floor and the hip-roll servo
+# cannot drag it in (the simulator's right leg ended 40 deg out; on the robot, 29 Oct 2026, the right hip roll
+# stall-locked once). So the leg is stepped in: weight onto the other leg (both ankle rolls), the free leg lifted a
+# little, its hip roll back to the reset value, the foot put down, then the reset pose. Tuned in the simulator
+# (1 Nov 2026, face down, three pushes): shift 10, lift 14, every move 2.2x the quick version: one round brings the
+# leg back within 3 deg and the torso leans no more than it did standing splayed (10-11 deg), then 1-2 deg; lifting
+# 17 leaned it 15-28 deg, 20 felled it.
+RECENTER_TOL = 3.0     # deg of hip roll off the reset pose that count as splayed
+RECENTER_SHIFT = 10.0  # deg of ankle roll that put the weight on the other leg
+RECENTER_LIFT = 14.0   # deg of hip pitch that lift the free leg (knee 1.5x, ankle 0.5x)
+RECENTER_SLOW = 2.2    # every move and wait this many times the quick version's
+
+
+def splayed_legs(angles, reset=None, tol=RECENTER_TOL):
+    """'Right' / 'Left' legs whose hip roll is more than tol off the reset pose, the worst first."""
+    from .servos import RESET_POSE
+    reset = reset or RESET_POSE
+    off = [(abs(angles[s + "HipLR"] - reset[s + "HipLR"]), s) for s in ("Right", "Left") if s + "HipLR" in angles]
+    return [s for d, s in sorted(off, reverse=True) if d > tol]
+
+
+def recenter_steps(angles, side, reset=None, shift=RECENTER_SHIFT, lift=RECENTER_LIFT, slow=RECENTER_SLOW):
+    """The moves that step the `side` leg in from the pose `angles`: [(servo angles, runtime ms, wait s)], ending
+    in the reset pose; slow stretches every move and wait."""
+    from .servos import RESET_POSE
+    reset = dict(reset or RESET_POSE)
+    other = "Left" if side == "Right" else "Right"
+    lean = 1 if side == "Right" else -1  # + leans left: the weight off the right leg
+    flex = -1 if side == "Right" else 1  # the right leg flexes with smaller HipFB/Knee/AnkleFB, the left mirrored
+    shifted = {"RightAnkleUD": reset["RightAnkleUD"] + lean * shift, "LeftAnkleUD": reset["LeftAnkleUD"] + lean * shift,
+               other + "HipLR": angles.get(other + "HipLR", reset[other + "HipLR"]) + lean * shift * 0.5}
+    lifted = {side + "HipFB": reset[side + "HipFB"] + flex * lift, side + "KneeFlex": reset[side + "KneeFlex"] + flex * lift * 1.5,
+              side + "AnkleFB": reset[side + "AnkleFB"] + flex * lift * 0.5}
+    steps = [(shifted, 500, 0.6), (lifted, 300, 0.35), ({side + "HipLR": reset[side + "HipLR"]}, 400, 0.45),
+             ({k: reset[k] for k in lifted}, 300, 0.4), (reset, 600, 1.0)]
+    return [(a, int(ms * slow), w * slow) for a, ms, w in steps]

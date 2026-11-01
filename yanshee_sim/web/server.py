@@ -125,7 +125,7 @@ class ActionBody(_Body):
 
 class GaitBody(_Body):
     speed_v: int = Field(0, ge=-5, le=5)
-    turn: int = Field(0, ge=-5, le=5)  # + anticlockwise; sim: SwayStep pivots, robot: AppWalk TurnLeft/TurnRight
+    turn: int = Field(0, ge=-5, le=5)  # + anticlockwise; AppWalk: TurnLeft/TurnRight while held
     speed_h: int = Field(0, ge=-5, le=5)
     steps: int = Field(0, ge=0, le=10000)
     period: int = Field(1, ge=0, le=5)
@@ -502,7 +502,8 @@ def create_app(controller=None, static_dir=STATIC_DIR, close_controller=None, **
 
     @app.post("/api/walkmethod")
     def walkmethod(body: WalkMethodBody = Body(default=WalkMethodBody())):
-        """The robot's walk: app = AppWalk (UBTECH's firmware gait, like the mobile app), sway = SwayStep (our gait)."""
+        """The walk: app = AppWalk (UBTECH's firmware gait, like the mobile app; the simulator plays the robot's recorded
+        walk), sway = SwayStep (our gait, archived: refused unless YANSHEE_ALLOW_SWAY=1)."""
         return _reply(ctl().set_walk_method(body.method))
 
     class AutoGetupBody(_Body):
@@ -512,6 +513,15 @@ def create_app(controller=None, static_dir=STATIC_DIR, close_controller=None, **
     def autogetup(body: AutoGetupBody = Body(default=AutoGetupBody())):
         """Real robot: stand it up by itself after a real fall (recovery.FallDetector)."""
         return _reply(ctl().set_auto_get_up(body.enable))
+
+    class BalanceBody(_Body):
+        enable: bool = True
+
+    @app.post("/api/balance")
+    def balance(body: BalanceBody = Body(default=BalanceBody())):
+        """IMU balance on AppWalk: the simulator's walks and turns; the robot's walk once tools/robot_checks.py balance
+        passed (state robot.balance_robot says whether it runs there)."""
+        return _reply(ctl().set_balance(body.enable))
 
     @app.post("/api/getup")
     def getup():

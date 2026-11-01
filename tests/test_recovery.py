@@ -150,3 +150,96 @@ def test_robot_stream_units_and_swaystep_body():
     assert {"RightHipFB", "LeftKneeFlex", "RightAnkleFB"} <= set(walk[len(walk) // 2][1])
     knees = [s[1]["RightKneeFlex"] for s in walk]
     assert max(knees) - min(knees) > 5  # it steps
+
+
+def _puts(srv, path):
+    return [e for e in list(srv.state.log) if e[0] == "PUT" and e[1] == path]
+
+
+def test_settle_gate_after_a_stop():
+    """A walk restarted right after a stop waits until the robot has settled (SETTLE_MIN_S, IMU steady), as the
+    robot's log of 29 Oct 2026 showed restarts within 1.5 s of a stop swing it back 11-38 deg."""
+    import time
+    from test_controller import Connected, wait_until
+    with Connected("robot") as (c, srv):
+        time.sleep(1.0)  # some IMU samples for the standing lean
+        assert c.gait(2, 0, steps=0, lease_s=5.0)["ok"]
+        assert wait_until(lambda: any(e[3].get("speed_v") == 2 for e in _puts(srv, "motions/gait")), 3)
+        assert c.gait_stop()["ok"]
+        t_stop = time.monotonic()
+        n = len(_puts(srv, "motions/gait"))
+        assert c.gait(2, 0, steps=0, lease_s=5.0)["ok"]
+        time.sleep(0.6)
+        assert not any(e[3].get("speed_v") == 2 for e in _puts(srv, "motions/gait")[n:]), "restarted before settling"
+        assert wait_until(lambda: any(e[3].get("speed_v") == 2 for e in _puts(srv, "motions/gait")[n:]), 4)
+        waited = time.monotonic() - t_stop
+        assert c.SETTLE_MIN_S - 0.1 <= waited <= c.SETTLE_MAX_S + 1.0, waited
+        c.gait_stop()
+
+
+def test_walk_to_turn_switch_stops_then_turns_once_settled():
+    import time
+    from test_controller import Connected, wait_until
+    with Connected("robot") as (c, srv):
+        time.sleep(1.0)
+        assert c.gait(2, 0, steps=0, lease_s=5.0)["ok"]
+        assert wait_until(lambda: any(e[3].get("speed_v") == 2 for e in _puts(srv, "motions/gait")), 3)
+        n_gait, n_mot = len(_puts(srv, "motions/gait")), len(_puts(srv, "motions"))
+        t_switch = time.monotonic()
+        assert c.gait(0, 0, steps=0, lease_s=5.0, turn=2)["updated"]
+        stops = _puts(srv, "motions/gait")[n_gait:]
+        assert stops and all(not stops[0][3].get(k) for k in ("speed_v", "speed_h", "period")), stops  # the app's stop now
+        turned = lambda: [e for e in _puts(srv, "motions")[n_mot:] if (e[3].get("motion") or {}).get("name") == "TurnLeft"]  # noqa: E731
+        time.sleep(0.6)
+        assert not turned(), "turned before the robot settled"
+        assert wait_until(lambda: bool(turned()), 4)
+        assert time.monotonic() - t_switch >= c.SETTLE_MIN_S - 0.1
+        c.gait_stop()
+
+
+def test_auto_get_up_leaves_a_firmware_get_up_alone():
+    """With fall management on, hal stands the robot up by itself; our auto get-up waits for it instead of being
+    refused (29 Oct 2026) and plays nothing when the robot ends upright."""
+    import time
+    from test_controller import Connected, wait_until
+    with Connected("robot") as (c, srv):
+        c.set_auto_get_up(True)
+        time.sleep(1.0)
+        lying = {"code": 0, "msg": "success", "data": {"gyro": [{"id": 1, "euler-x": 179.0, "euler-y": 0.0, "euler-z": 0.0,
+                 "gyro-x": 0.0, "gyro-y": 0.0, "gyro-z": 0.0, "accel-x": 0.0, "accel-y": 0.0, "accel-z": -1.0}]}}
+        srv.state.overrides[("GET", "sensors/gyro")] = lying
+        srv.state.overrides[("GET", "motions")] = {"code": 0, "msg": "success",
+                                                   "data": {"name": "GetupRear", "status": "run", "timestamp": 0}}
+        assert wait_until(lambda: c._recovering, 6), "the fall was not noticed"
+        time.sleep(2.0)
+        assert not [e for e in _puts(srv, "motions") if (e[3].get("motion") or e[3]).get("name") == "GetupRear"]
+        srv.state.overrides.pop(("GET", "sensors/gyro"))  # the firmware's get-up finished: standing again
+        srv.state.overrides.pop(("GET", "motions"))
+        assert wait_until(lambda: not c._recovering, 8)
+        assert any("own fall manager stood it up" in e["text"] for e in c.events_since(0))
+        assert not [e for e in _puts(srv, "motions") if (e[3].get("motion") or e[3]).get("name") == "GetupRear"]
+        c.set_auto_get_up(False)
+
+
+def test_fall_reports_when_it_began():
+    """up_t: the last time the robot was upright, i.e. when the fall began (what it was doing then caused it)."""
+    det = recovery.FallDetector()
+    ev = [det.feed(t, x, g) for t, x, g in [(0.0, 92, 1), (0.5, 92, 1), (0.75, 60, 150), (1.0, 2, 80)] +
+          [(1.0 + i / 10, 1.0, 2.0) for i in range(1, 15)]]
+    ev = [e for e in ev if e]
+    assert len(ev) == 1 and ev[0]["up_t"] == 0.5 and ev[0]["down_t"] == 1.0
+
+
+def test_recenter_steps_mirror_and_end_in_the_reset_pose():
+    """Stepping a splayed leg in: the weight goes onto the other leg, the free leg lifts and swings in, everything
+    ends in the reset pose; the left leg's moves mirror the right's (180 - x, ankle rolls keep the sign of the lean)."""
+    from yanshee_sim.servos import RESET_POSE
+    pose = dict(RESET_POSE, RightHipLR=50, LeftHipLR=97)
+    assert recovery.splayed_legs(pose) == ["Right", "Left"] and recovery.splayed_legs(RESET_POSE) == []
+    right, left = recovery.recenter_steps(pose, "Right"), recovery.recenter_steps(pose, "Left")
+    assert right[-1][0] == RESET_POSE and right[2][0] == {"RightHipLR": RESET_POSE["RightHipLR"]}
+    assert right[0][0]["RightAnkleUD"] > 90 and left[0][0]["RightAnkleUD"] < 90  # lean left / right
+    for n, d in right[1][0].items():  # the lift, mirrored
+        m = n.replace("Right", "Left")
+        assert abs((180 - d) - left[1][0][m]) < 1e-9, (n, d, left[1][0][m])
+    assert all(ms >= 600 for _, ms, _ in right)  # the slow version

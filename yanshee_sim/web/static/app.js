@@ -259,8 +259,8 @@
       b.classList.toggle("na", b.dataset.mode !== "sim" && !s.robot.connected);
       const ag = $("#autoGetup");
       if (ag && document.activeElement !== ag) ag.checked = !!s.robot.auto_get_up;
-      const wm = $("#walkMethod");
-      if (wm && document.activeElement !== wm && s.robot.walk_method) wm.value = s.robot.walk_method;
+      const bl = $("#balance");
+      if (bl && document.activeElement !== bl) bl.checked = !!s.robot.balance;
     });
     const r = s.robot || {};
     const dot = $("#robotDot");
@@ -360,11 +360,14 @@
     const sh = r.shadow;
     $("#robotInfo").textContent = r.connected
       ? `Robot ${r.ip || ""} ${r.online === false ? "(not answering!)" : "online"}` +
-        (r.mirroring ? " · sim mirrors it" : "") + (r.link ? " · link" : "") +
+        (r.mirroring ? " · sim mirrors it" : "") + (r.link ? " · link" : r.link_lost ? " · link lost, reconnecting" : "") +
+        (r.balance ? (r.balance_robot === "on" ? " · balance on robot" : " · balance: sim only") : "") +
         (sh ? ` · shadow sim ${sh.fallen ? "FELL" : "tilt " + Math.round(sh.tilt) + "°"}` : "")
       : "Robot: not connected";
     $("#robotInfo").title = "sim mirrors it: the simulator shows the real robot (encoders + IMU, physics paused). " +
-      "link: the robot link is up (SwayStep, encoders, IMU, hal monitor, firmware logs -> robot_dump/sim2real_*.jsonl). " +
+      "link: the robot link is up (encoders, IMU, hal monitor, firmware logs -> robot_dump/sim2real_*.jsonl; walk " +
+      "commands go through it; the robot stops a walk by itself if the laptop goes quiet). " +
+      "balance: sim only = the robot's balance is off (" + (r.balance_robot || "off") + "). " +
       "shadow sim: hidden physics fed the robot's own servo frames while it walks; its prediction is logged next to the robot.";
   }
 
@@ -399,9 +402,9 @@
       return;
     }
     const sp = +$("#walkSpeed").value || 3;
-    // robot: AppWalk turns with TurnLeft/TurnRight while held; sim: SwayStep pivots; Both: each its own way
+    // AppWalk: turns play TurnLeft/TurnRight while held (the sim plays the robot's copy)
     const body = { speed_v: sv * sp, speed_h: sh * sp, turn: st * sp, steps: 0,
-      period: +$("#walkPeriod").value || 1, wave: $("#walkWave").checked };
+      period: 1, wave: $("#walkWave").checked }; // period 1, as the mobile app sends it
     const key = JSON.stringify(body);
     if (walk.active && key === walk.lastKey) return;
     walk.active = true; walk.lastKey = key;
@@ -458,7 +461,7 @@
   $("#dpadStop").addEventListener("click", () => { walkRelease(); api("POST", "/api/gait/stop"); });
   $("#getupBtn").addEventListener("click", (e) => { walkRelease(); busy(e.currentTarget, () => api("POST", "/api/getup")); });
   $("#autoGetup").addEventListener("change", (e) => api("POST", "/api/autogetup", { enable: e.currentTarget.checked }));
-  $("#walkMethod").addEventListener("change", (e) => api("POST", "/api/walkmethod", { method: e.currentTarget.value }));
+  $("#balance").addEventListener("change", (e) => api("POST", "/api/balance", { enable: e.currentTarget.checked }));
   for (const [id, direction] of [["#tipFront", "front"], ["#tipBack", "back"]]) {
     $(id).addEventListener("click", (e) => {
       if (mode() !== "sim") { toast("Tip over is a simulator test: switch to Sim mode first.", "info"); return; }

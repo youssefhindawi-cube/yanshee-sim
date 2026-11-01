@@ -21,7 +21,16 @@ def main():
     args = ap.parse_args()
     if not os.path.exists(args.file):
         raise SystemExit(f"no statistics yet ({args.file})")
-    rows = [json.loads(line) for line in open(args.file) if line.strip()]
+    rows, seen = [], set()
+    for line in open(args.file):
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        key = (r.get("session"), r.get("method"), r.get("kind"), round(r.get("t", 0), 1), r.get("switch"))
+        if r.get("kind") == "switch" and key in seen:
+            continue  # two stops logged at once (fixed 29 Oct 2026: WalkStats.command is locked now)
+        seen.add(key)
+        rows.append(r)
     by = collections.defaultdict(lambda: {"sessions": set(), "moving": 0.0, "switches": 0, "falls": collections.Counter(),
                                           "after_switch": collections.Counter(), "getups": 0, "getups_ok": 0, "lying": 0})
     for r in rows:
