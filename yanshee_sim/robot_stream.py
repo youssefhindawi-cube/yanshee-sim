@@ -52,6 +52,7 @@ UNITS_PER_DEG = 4096 / 360.0
 KEEP = 65535  # "leave this servo alone"
 UPRIGHT_EULER_X = 92.0  # the robot's euler-x standing (measured 29 Oct 2026)
 REMOTE_PATH = "/tmp/yanshee_sway_stream.py"
+PID_PATH = "/tmp/yanshee_sway_stream.pid"  # the running node's pid: a new link ends that node first
 ROBOT_LOG_DIR = "/home/pi/yanshee_logs"
 ROS_ENV = "source /opt/ros/kinetic/setup.bash; source /opt/yanshee/setup.bash >/dev/null 2>&1; "
 PING_S = 2.0  # clock pings over the link
@@ -82,6 +83,11 @@ LINGER_S = 60.0  # laptop silent this long: this node exits (a link that died wi
 if not os.path.isdir(LOG_DIR):
     os.makedirs(LOG_DIR)
 LOG_PATH = os.path.join(LOG_DIR, "robot_%s.jsonl" % SESSION)
+try:  # the next link ends this node by this pid (robot_stream.launch_command)
+    with open("/tmp/yanshee_sway_stream.pid", "w") as pidf:
+        pidf.write(str(os.getpid()))
+except (IOError, OSError):
+    pass
 logf = open(LOG_PATH, "a")
 rospy.init_node("yanshee_sway_stream", anonymous=True, disable_signals=True)
 NODE = rospy.get_name()
@@ -441,6 +447,14 @@ rospy.signal_shutdown("done")
 '''
 
 
+def launch_command(args, path=REMOTE_PATH, pid_path=PID_PATH, python="python2"):
+    """The shell command that starts the node on the robot. One node at a time: it first ends the node a link that
+    died without closing left running, by the pid that node wrote (matching its name with pkill would also match
+    this very command line and kill it before the node starts, as happened on 2 Nov 2026)."""
+    return (f"old=$(cat {pid_path} 2>/dev/null); if [ -n \"$old\" ] && grep -q yanshee_sway_stream /proc/$old/cmdline "
+            f"2>/dev/null; then kill $old; sleep 0.5; fi; exec {python} -u {path} " + " ".join(args))
+
+
 def _node_source():
     """What runs on the robot: yanshee_sim/balance.py, the servo table, then REMOTE."""
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "balance.py")) as f:
@@ -489,9 +503,7 @@ class RobotStream:
                                 capture_output=True)
             if up.returncode:
                 raise RuntimeError(f"cannot upload the stream script to the robot: {up.stderr.strip()[:200]}")
-            # one node at a time: end any left from a link that died without closing ([p]: not this shell itself)
-            cmd = self._ssh[:-1] + SSH_ALIVE + self._ssh[-1:] + [
-                ROS_ENV + f"pkill -f '[p]ython2 -u {REMOTE_PATH}'; exec python2 -u {REMOTE_PATH} " + " ".join(args)]
+            cmd = self._ssh[:-1] + SSH_ALIVE + self._ssh[-1:] + [ROS_ENV + launch_command(args)]
         else:
             cmd = launcher(args)
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

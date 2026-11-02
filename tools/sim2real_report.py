@@ -7,7 +7,7 @@
   tools/fetch_robot_logs.py.
 
 The robot's times are moved to the laptop clock with the offset from the quickest clock pings, followed through the
-session (the robot's clock drifts: 45 ms in 24 min on 29 Oct 2026, its time service correcting it), then per walk (AppWalk
+session (the robot's clock drifts: 45 ms in 24 min on 29 Oct 2026; it is not time-synced, NTP off, seen 2 Nov 2026), then per walk (AppWalk
 or SwayStep): duration, frames (the firmware's or ours), the robot's tilt (IMU) against the shadow simulator's, who
 fell, the delay from a frame to the encoders reaching it and the error left, the shadow's joints against the
 encoders; then how late our frames reached the robot over the link, battery, temperature, firmware warnings.

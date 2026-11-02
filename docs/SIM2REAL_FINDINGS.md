@@ -89,7 +89,7 @@ own only if the robot is still down afterwards; the Get up button says so instea
 - **Walking statistics** logged each stop twice (two stops arriving at once): locked, and the report skips the old
   duplicates.
 - The link carried our frames 3 ms late when idle and 31 ms late while streaming at 50 per second. Corrected 1 Nov
-  2026: the 31 ms was the robot's clock drifting (57 ms over the 24 min session, its time service correcting it)
+  2026: the 31 ms was the robot's clock drifting (57 ms over the 24 min session; the robot's clock is not time-synced, NTP off, seen 2 Nov 2026)
   against one clock offset for the whole session; the report now follows the drift and the frames were 3 ms late
   (95% 10 ms, max 34 ms). With it the recorded AppWalk stops come 12 frames after the command at least (was 13).
 - Most of the session ran on battery (7.95-8.38 V); the charger came off just before the first walk.
@@ -164,3 +164,32 @@ link start): each keyframe a linear move over its runtime in 20 ms frames, then 
 encoders' pose, looped until released, then ResetSwitch, every frame with the ankle offsets; it stops by itself
 (ResetSwitch) if the laptop goes silent, at once on STOP. As in the simulator's own turn playback, where the balance
 removed the TurnLeft falls.
+
+## Link and Wi-Fi measured on the robot (2 Nov 2026, office, robot on the charger)
+
+Robot on the office network (2.4 GHz channel 6, signal -50 dBm, 72 Mbit/s); laptop on 5 GHz at -67 dBm.
+`tools/latency_test.py`, 5 minutes each (robot_dump/latency_test_20261102_*.json):
+
+| | ping median / 95% / max | link (ssh) median / 95% / max | REST new / kept open (median) | replies over 100 ms (ping) |
+|---|---|---|---|---|
+| Wi-Fi power saving on (as booted) | 14 / 587 / 2059 ms | 25 / 694 / 2261 ms | 129 / 76 ms | 28 % |
+| power saving off | 14 / 291 / 1868 ms | 20 / 348 / 1915 ms | 129 / 86 ms | 20 % |
+
+- **Power saving was on** (a boot script turns it off at 9 s, something turns it back on), and the Wi-Fi took about
+  3 minutes after boot to join. Off, the 95th percentiles halve; the 1-2 s stalls remain.
+- **The stalls are on the robot's leg**: pinging the router at the same time, the laptop got median 5 / 95 % 20 /
+  max 41 ms, the robot 11 / 153 / 504 ms (8 % over 100 ms). The robot's channel 6 is overlapped by strong networks on
+  5, 7 and 8; channel 1 (one weak network) and 11 are the quiet ones here: the show router goes there.
+- **The REST server is the cost of a command**: it takes 56-77 ms per call on the robot itself (through the link,
+  timed on the robot); a call over the Wi-Fi with a kept-open connection 76-89 ms, a new connection 117-129 ms
+  (rest.py's way), through the link 87 ms. Below that only by skipping the REST server: `/gait_node` listens on
+  `/motion_planning_speed` (ubt_msgs: int32 speed_v, speed_h) and `/teleopkey` (Twist); nothing publishes there
+  while idle. What the REST server sends there during a walk is still to capture (robot walking).
+- The robot's clock is not time-synced (NTP off): the drift in the logs is the crystal's, the report follows it.
+- The new robot node starts on the robot in 5 s and does everything that does not move the robot: REST through the
+  link, IMU 19/s, encoders, the turn frames loaded, balance on/off while idle (no frames sent), no warnings. Its
+  first start failed: `pkill -f` matched its own launch command; the node now leaves a pid file instead.
+- The demo session of 29 Oct (copied today): the robot stayed up in its 4 walks; replayed on the current model the
+  simulator falls at 6.4 s in the 12 s forward walk (3 of 4 agree); with joint damping x1.5, servo gain x1.25 or
+  friction 0.6 all 4 agree (damping best: pitch RMS 4.6 deg). A lead for the next refit (damping x2 broke the
+  get-up fit before). Its two turns: the simulator turned half as far (-32 / -41 deg against -63 / -96).

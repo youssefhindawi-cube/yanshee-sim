@@ -281,3 +281,23 @@ def test_controller_sends_turns_to_the_node_with_the_balance_on():
     c._robot_walk_send(robot, {}, p, True)
     c._robot_turn_release(robot, p)
     assert calls == [("hal", "TurnRight"), ("gait", (0, 0, 0, 0, False))]
+
+
+def test_launch_command_ends_the_old_node_not_itself():
+    """The command that starts the node on the robot ends a node left running (by its pid file) and starts the new
+    one; matching by name (pkill -f) killed the command itself on the robot on 2 Nov 2026."""
+    d = tempfile.mkdtemp()
+    old = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "yanshee_sway_stream_old"])
+    pid_path, script = os.path.join(d, "node.pid"), os.path.join(d, "yanshee_sway_stream.py")
+    with open(pid_path, "w") as f:
+        f.write(str(old.pid))
+    with open(script, "w") as f:
+        f.write("import sys; print('started ' + ' '.join(sys.argv[1:]))\n")
+    try:
+        out = subprocess.run(["bash", "-c", robot_stream.launch_command(["5.0", "s"], path=script, pid_path=pid_path,
+                                                                        python=sys.executable)],
+                             capture_output=True, text=True, timeout=10).stdout
+        assert out.strip() == "started 5.0 s"
+        assert old.wait(5) is not None  # the old node was ended
+    finally:
+        old.kill()

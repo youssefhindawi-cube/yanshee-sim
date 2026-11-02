@@ -165,17 +165,19 @@ Done on 29 Oct 2026 from the walking session's logs (`docs/SIM2REAL_FINDINGS.md`
   replaying the 17 AppWalk walks (`tools/sim2real_replay.py`: falls agree 13 -> 16 of 17, pitch 7.6 -> 5.9 deg, roll
   4.2 -> 3.1 deg) with the get-up fits kept. One session on one floor: validate on new sessions, and on the show floor.
 
-- **Copy the demo's robot log** (29 Oct 2026 19:38, 1 min: 4 AppWalk walks, 2 turns; the robot left the Wi-Fi before
-  the GUI could copy it): `python3 tools/fetch_robot_logs.py --ip 192.168.89.74` (`robot_20261029_193840.jsonl`).
 - **The robot drops off the Wi-Fi**: twice on 29 Oct, about a minute after the link started (once idle, once after 4
   walks); its own log kept running through the first drop, so the Pi stayed up and only the Wi-Fi went. Check on the
   Pi: Wi-Fi power saving (`iw dev wlan0 get power_save`), signal (`iwconfig wlan0`), which saved networks it can join
-  (`wpa_cli list_networks`). For the show: a dedicated access point next to the stand.
-- **Latency baseline, then each fix** (`tools/latency_test.py`, docs/SIM2REAL_FINDINGS.md "Link latency"):
-  `--seconds 300 --label baseline`; then `--power-save off --label "power save off"` (lasts until the robot
-  restarts; make it permanent if it helps); then on the travel router with the laptop wired; once, with the GUI
-  disconnected and the robot standing, `--move` (command -> arm servo) and `--relay` (REST through the link: the
-  REST server's own time). Compare: `--compare robot_dump/latency_test_*.json`.
+  (`wpa_cli list_networks`). For the show: a dedicated access point next to the stand. Measured 2 Nov 2026
+  (docs/SIM2REAL_FINDINGS.md "Link and Wi-Fi measured on the robot"): power saving on at boot, stalls on the robot's
+  leg, channel 6 crowded. Still to do: keep power saving off across reboots (it lasts until the next one), then the
+  travel router on channel 1 or 11 with the laptop wired, and repeat `tools/latency_test.py --seconds 300`.
+- **Walk commands without the REST server** (56-77 ms per call on the robot): with the robot walking from the app or
+  the GUI, record `/motion_planning_speed` and `/teleopkey` (`rostopic echo`) to see what the REST server sends the
+  gait; then the node could publish it directly.
+- **Latency** (`tools/latency_test.py`): baseline, power saving off and `--relay` done 2 Nov 2026 on the office
+  Wi-Fi. Still: on the travel router with the laptop wired, and once, the robot standing and the GUI disconnected,
+  `--move` (command -> arm servo). Compare: `--compare robot_dump/latency_test_*.json`.
 - **Get up ends in the reset pose** (1 Nov 2026, tested in the simulator and against the fake robot): after the
   get-up motion (and Base_GetupF's reset) the Reset button's own move; a leg left splayed (hip roll more than 4 deg
   out, not stall-locked) is stepped in: weight onto the other leg with both ankle rolls (10 deg), the free leg
