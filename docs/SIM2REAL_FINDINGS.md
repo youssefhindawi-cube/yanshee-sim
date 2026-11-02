@@ -186,6 +186,11 @@ Robot on the office network (2.4 GHz channel 6, signal -50 dBm, 72 Mbit/s); lapt
   `/motion_planning_speed` (ubt_msgs: int32 speed_v, speed_h) and `/teleopkey` (Twist); nothing publishes there
   while idle. What the REST server sends there during a walk is still to capture (robot walking).
 - The robot's clock is not time-synced (NTP off): the drift in the logs is the crystal's, the report follows it.
+  Fixed the same day: `tools/robot_setup.py` syncs it at boot (and keeps Wi-Fi power saving off).
+- **Command -> servo through the link** (`latency_test.py --move`, robot standing, timed on the robot's own log):
+  LeftShoulderFlex starts moving a median 76 ms after our frame (worst 92), is settled by 124 ms (worst 156), 1 deg
+  short of the command. Over REST (29 Oct, B4) the first movement came 310 ms after the call: the link reaches the
+  servos four times sooner, which is why the balance and the node's turns run there.
 - The new robot node starts on the robot in 5 s and does everything that does not move the robot: REST through the
   link, IMU 19/s, encoders, the turn frames loaded, balance on/off while idle (no frames sent), no warnings. Its
   first start failed: `pkill -f` matched its own launch command; the node now leaves a pid file instead.

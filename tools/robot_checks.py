@@ -9,6 +9,7 @@
     python3 tools/robot_checks.py gait --ip IP               # seconds per step for the built-in gait; distance by tape
     python3 tools/robot_checks.py inspect --ip IP            # read-only ssh dump of the Raspberry Pi (+ its .hts files)
     python3 tools/robot_checks.py balance --ip IP            # ankle -> IMU signs for the balance (B3), before using it
+    python3 tools/robot_checks.py legs --ip IP               # B2 for the legs: each leg servo's direction, the robot standing
 
 Every mode writes its numbers to robot_dump/<mode>_<time>.json (or robot_dump/inspect_<time>/) so they can be
 turned into simulator constants later. Nothing is written to the robot: inspect only reads and copies files.
@@ -620,6 +621,73 @@ def balance_check(args):
     _save("balance", {"ip": args.ip, "deg": BALANCE_DEG, "results": results, "ok": ok})
 
 
+# -- leg joint directions (B2) -------------------------------------------------------------------------------------
+LEG_DEG = 3.0
+LEGS = [n for n in NAMES if any(k in n for k in ("Hip", "Knee", "Ankle"))]
+
+
+def sim_leg_leans(deg=LEG_DEG, settle=1.0):
+    """{servo: (lean back, lean right)} change in the simulator, standing in RESET_POSE, when that servo alone moves
+    +deg (and back): what the robot's IMU should show for the same move if the joint turns the same way."""
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    from yanshee_sim.robot import SimRobot
+    sim = SimRobot(viewer=False, realtime=False)
+    sim.respawn()
+    sim.set_servos_angles(dict(RESET_POSE), 500)
+    sim.wait(1.5)
+    out = {}
+    for n in LEGS:
+        a = sim.torso_lean()
+        sim.set_servos_angles({n: RESET_POSE[n] + deg}, 400)
+        sim.wait(settle)
+        b = sim.torso_lean()
+        sim.set_servos_angles({n: RESET_POSE[n]}, 400)
+        sim.wait(settle)
+        out[n] = (b[0] - a[0], b[1] - a[1])
+    sim.close()
+    return out
+
+
+def legs(args):
+    """B2 for the legs without taking them limp: the robot standing in its reset pose, each leg servo moves +3 deg on
+    its own and back; the torso's lean change (IMU) is compared with the simulator's for the same move. Same sign on
+    the larger component = the joint turns the way the model says; opposite = flipped in the model."""
+    from yanshee_sim.balance import lean_from_imu
+    rest = YansheeRest(args.ip, timeout=args.timeout)
+    print("the simulator's answer first ...", flush=True)
+    expect = sim_leg_leans()
+    _confirm("Robot standing on the floor, charger out, nothing touching it, someone ready to catch it. It moves each "
+             f"leg servo {LEG_DEG:g} deg and back, one at a time (about 1 minute).", args.yes)
+    _ok(rest.set_angles(dict(RESET_POSE), runtime=1000), "reset pose")
+    time.sleep(1.5)
+
+    def lean(seconds=0.8):
+        m = _sample_gyro(rest, seconds)[0]
+        return lean_from_imu((m["euler-x"], m["euler-y"]), (m["gyro-x"], m["gyro-y"], m["gyro-z"]))
+    results, rows = {}, []
+    for n in LEGS:
+        before = lean()
+        _ok(rest.set_angles({n: RESET_POSE[n] + LEG_DEG}, runtime=400), f"{n} move")
+        time.sleep(1.0)
+        after = lean()
+        _ok(rest.set_angles({n: RESET_POSE[n]}, runtime=400), f"{n} back")
+        time.sleep(1.0)
+        got = (after[0] - before[0], after[1] - before[1])
+        sb, sr = expect[n]
+        k = 0 if abs(sb) >= abs(sr) else 1
+        want, have = expect[n][k], got[k]
+        verdict = ("same" if want * have > 0 and abs(have) >= 0.3 else "FLIPPED" if want * have < 0 and abs(have) >= 0.3
+                   else "unclear") if abs(want) >= 0.5 else "too small to tell"
+        results[n] = {"sim": [round(sb, 2), round(sr, 2)], "robot": [round(got[0], 2), round(got[1], 2)], "verdict": verdict}
+        rows.append(f"  {n:13s} lean {'back' if k == 0 else 'right'}: sim {want:+5.1f}, robot {have:+5.1f} deg -> {verdict}")
+        print(rows[-1], flush=True)
+    flipped = [n for n, r in results.items() if r["verdict"] == "FLIPPED"]
+    unclear = [n for n, r in results.items() if r["verdict"] not in ("same", "FLIPPED")]
+    print(f"{len(LEGS) - len(flipped) - len(unclear)}/{len(LEGS)} as in the simulator"
+          + (f"; FLIPPED: {', '.join(flipped)}" if flipped else "") + (f"; unclear: {', '.join(unclear)}" if unclear else ""))
+    _save("legs", {"ip": args.ip, "deg": LEG_DEG, "results": results, "flipped": flipped, "unclear": unclear})
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -653,6 +721,8 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="run under 50 %% battery")
     p = sub.add_parser("balance", help="ankle -> IMU signs for the balance, the robot standing")
     common(p)
+    p = sub.add_parser("legs", help="B2 for the legs: each leg servo's direction from the IMU, the robot standing")
+    common(p)
     p = sub.add_parser("servo", help="step response of one arm servo")
     common(p)
     p.add_argument("--servo", default="RightShoulderFlex")
@@ -674,7 +744,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         {"latency": latency, "imu": imu, "gyro": gyro, "fall": fall, "servo": servo, "gait": gait, "inspect": inspect,
-         "balance": balance_check}[args.mode](args)
+         "balance": balance_check, "legs": legs}[args.mode](args)
     except KeyboardInterrupt:
         print("\naborted")
         return 130

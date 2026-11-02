@@ -170,7 +170,7 @@ Done on 29 Oct 2026 from the walking session's logs (`docs/SIM2REAL_FINDINGS.md`
   Pi: Wi-Fi power saving (`iw dev wlan0 get power_save`), signal (`iwconfig wlan0`), which saved networks it can join
   (`wpa_cli list_networks`). For the show: a dedicated access point next to the stand. Measured 2 Nov 2026
   (docs/SIM2REAL_FINDINGS.md "Link and Wi-Fi measured on the robot"): power saving on at boot, stalls on the robot's
-  leg, channel 6 crowded. Still to do: keep power saving off across reboots (it lasts until the next one), then the
+  leg, channel 6 crowded. Power saving is off across reboots since 2 Nov (`tools/robot_setup.py`). Still to do: the
   travel router on channel 1 or 11 with the laptop wired, and repeat `tools/latency_test.py --seconds 300`.
 - **Walk commands without the REST server** (56-77 ms per call on the robot): with the robot walking from the app or
   the GUI, record `/motion_planning_speed` and `/teleopkey` (`rostopic echo`) to see what the REST server sends the
@@ -191,6 +191,18 @@ Done on 29 Oct 2026 from the walking session's logs (`docs/SIM2REAL_FINDINGS.md`
   link is back" within about 10 s. Also check the walk commands now go through the link (`relay` rows in the
   robot's log) and the walk still starts and stops as before.
 
+Done on the robot on 2 Nov 2026 (office, smooth floor, `robot_dump/*_20261102_*.json`):
+
+- **B2 joint directions, all 17**: the six arm servos and the two hip rolls moved over REST and watched (hips with
+  the robot held in the air), the other eight leg servos from the IMU lean each one causes (`tools/robot_checks.py
+  legs`, standing, 3 deg each): every joint turns the way the model says (`robot_dump/joint_dirs_2026-11-02.json`).
+  B3 with it: the ankle pitch leans the torso as in the simulator.
+- **Balance sign check** (`tools/robot_checks.py balance`): passed (pitch -3.7 deg, roll -1.2 deg for +3 deg, both
+  as in the simulator), so the GUI's Balance runs on the robot now; E7's walks and turns are still to do.
+- **Wi-Fi power saving off for good and the clock synced at boot**: `python3 tools/robot_setup.py --ip IP`
+  installed a boot service and a dhcpcd hook on the Pi (`--status` shows them, `--remove` takes them out). The
+  robot's log now records whether the clock was synced (`clock_synced` in the info row; the report prints it).
+
 Still open:
 
 - **Record the AppWalk directions the simulator is missing** (Sim mode refuses them until then): with the GUI in Both
@@ -203,9 +215,8 @@ Still open:
 - **Carry-over between walks in the replay**: each walk is replayed from rest, so a walk started while the robot was
   still swinging (walk 12) cannot match; replay a whole session continuously.
 - **IMU balance on the robot** (built 1 Nov 2026, `yanshee_sim/balance.py`, GUI "Balance"; tested only in the
-  simulator and against a fake ROS): first `python3 tools/robot_checks.py balance --ip IP` (robot standing: two 3 deg
-  ankle moves; the robot's balance stays off unless both lean the torso the way they do in the simulator, which also
-  settles B3). Then, Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
+  simulator and against a fake ROS; the sign check `tools/robot_checks.py balance` passed on 2 Nov 2026, so the
+  robot's balance is enabled). Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
   push from behind with a finger): `tools/sim2real_report.py` tilt per walk, `bal` rows (the offsets) and `frame` rows
   with src `balance` in the robot's log; watch for hal warnings ("Read servo angle status timeout") with the extra
   frames. Turns with the balance on are played by the node (frames with src `turn`, `turn` rows): first hold

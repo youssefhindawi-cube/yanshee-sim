@@ -64,7 +64,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 REMOTE = r'''
 UNITS = 4096 / 360.0
-import sys, os, json, threading, time, rospy
+import sys, os, json, threading, time, subprocess, rospy
 try:
     import httplib
     import Queue as queue
@@ -271,6 +271,11 @@ def info():  # once: calibration offsets, versions, extension sensors (hal read 
         d["ext"] = fields(proxy("/hal_ext_read", "ext_read")(0))
     except Exception as e:
         d["error"] = str(e)
+    try:  # is the robot's clock synced (the logs' timestamps)? tools/robot_setup.py syncs it at boot
+        td = subprocess.check_output(["timedatectl"]).decode("utf-8", "replace")
+        d["clock_synced"] = "synchronized: yes" in td
+    except Exception:
+        pass
     rec("info", d)
     out({"info": d, "t": time.time()})
 def encoders():  # the servo encoders straight from hal (whole degrees), ENC_HZ per second

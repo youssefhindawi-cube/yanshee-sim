@@ -1,0 +1,11 @@
+# Installed by yanshee_sim (tools/robot_setup.py)
+[Unit]
+Description=Yanshee: Wi-Fi power saving off and clock sync at boot
+After=network.target dhcpcd.service systemd-timesyncd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/yanshee-net-tune.sh
+
+[Install]
+WantedBy=multi-user.target

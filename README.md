@@ -337,6 +337,20 @@ python3 tools/robot_checks.py balance --ip IP     # writes robot_dump/balance_<t
 What it changed in the simulator, and why the simulator tipped in TurnLeft before (contact friction, now 0.7):
 docs/SIM2REAL_FINDINGS.md "Turning and IMU balance".
 
+### `tools/robot_setup.py` — the Raspberry Pi's boot settings for the show
+
+```bash
+python3 tools/robot_setup.py --ip IP            # install: Wi-Fi power saving off (at boot and after every reconnection), clock synced at boot
+python3 tools/robot_setup.py --ip IP --status   # what is installed, power saving now, clock sync, the boot log line
+python3 tools/robot_setup.py --ip IP --remove   # back to how the robot came
+```
+
+Installs three files on the Pi (`tools/robot_setup/`): a boot service that waits for the Wi-Fi, switches its power
+saving off and restarts the time sync, and a dhcpcd hook that switches power saving off again after every
+reconnection (the driver turns it back on). Measured 2 Nov 2026: power saving on doubled the 95 % link delays; the
+robot's clock was not synced at all, which is what drifted in the logs. The robot's log now says whether the clock
+was synced when a session started.
+
 ### `tools/latency_test.py` — how fast and how steady the link to the robot is
 
 ```bash
@@ -695,10 +709,11 @@ Then `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit
 | `tests/test_controller.py` | The relay controller in sim, robot and both modes: safety gate, STOP and mode-switch races, walking dead-man and gentle stop, a robot that stops answering, concurrency, a soak (`YANSHEE_SOAK_S` shortens it) |
 | `tests/test_server.py` | The web server: every endpoint, bad input, body limits, the WebSocket, MJPEG streams and the robot-camera proxy, a real uvicorn shutdown |
 | `tests/test_link.py` | The robot link's node on a fake ROS (`tests/fake_ros/`, Python 3 and 2): REST through the link and the fallback, the robot's watchdog stopping a walk and a looping turn when the laptop goes quiet, the balance's ankle frames on the firmware walk and their fade, the controller bringing a lost link back |
+| `tests/test_robot_setup.py` | `tools/robot_setup.py`: the three files it installs on the Pi parse and carry the marker it uninstalls by |
 | `tests/test_latency.py` | `tools/latency_test.py` without the robot: the link echo and REST timing locally, ping, Wi-Fi parsing (`iw` and `iwconfig`), the command -> servo timing from a robot log |
 | `tests/test_yanapi_sim.py` | `run_in_sim.py`'s simulated YanAPI (official examples run unchanged), `record_real_motion.py`, `pose_editor.py`, `view.py` |
 
-`python3 -m pytest -q tests` runs all 188 (6–7 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
+`python3 -m pytest -q tests` runs all 191 (6–7 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
 runs one file. `tests/fake_robot.py` is the fake Yanshee REST server behind the robot tests; run it by hand for GUI
 work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 

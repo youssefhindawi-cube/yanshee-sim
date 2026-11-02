@@ -1,0 +1,5 @@
+# Installed by yanshee_sim (tools/robot_setup.py): Wi-Fi power saving off after every (re)connection of wlan0 (the
+# driver turns it back on at each one); see /usr/local/bin/yanshee-net-tune.sh.
+if [ "$interface" = "wlan0" ]; then
+    /sbin/iw dev wlan0 set power_save off 2>/dev/null
+fi

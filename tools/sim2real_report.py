@@ -207,6 +207,8 @@ def main():
             print(f"IMU on the robot: {1000 / statistics.median(gaps):.1f} per second, 95% gap {pct(gaps, 0.95):.0f} ms")
     for r in by["info"][-1:]:
         print("servo calibration offsets: " + ", ".join(f"{n} {o}" for n, o in zip(NAMES, r.get("servo_offsets") or [])))
+        if "clock_synced" in r:
+            print(f"robot clock time-synced (NTP) at the start: {'yes' if r['clock_synced'] else 'NO'}")
     warn = collections.Counter((r.get("node"), r.get("msg", "")[:70]) for r in by["rosout"] if r.get("lvl") in ("WARN", "ERROR", "FATAL"))
     if warn:
         print("firmware warnings/errors:")
