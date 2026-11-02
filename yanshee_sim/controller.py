@@ -897,27 +897,47 @@ class Controller:
 
     RESET_MOVE_S = 1.2  # the reset move (1000 ms) and a little settling
     RECENTER_ROUNDS = 2  # get up: at most this many tries at stepping a splayed leg in
+    # Base_GetupF can end with the hips wide (2 Nov 2026: 29 and 117 deg, the robot leaning right). Closing them with
+    # both feet planted stalls the hip-roll servos (torque at the limit for seconds in the simulator; on the robot
+    # the servos lock until a mode cycle). So when a hip roll is more than HIP_WIDE_DEG out, the get-up stands up
+    # WITHOUT closing the hips and steps each leg in with the foot lifted instead of playing the robot's reset.
+    HIP_WIDE_DEG = 10.0
+
+    def _wide_hips(self, angles):
+        """{hip roll servo: angle} for the hip rolls more than HIP_WIDE_DEG off the reset pose (else {})."""
+        wide = {n: angles[n] for n in ("RightHipLR", "LeftHipLR") if n in angles and abs(angles[n] - RESET_POSE[n]) > self.HIP_WIDE_DEG}
+        return wide if wide else {}
+
+    def _stand_wide_pose(self, angles):
+        """The reset pose with the hip rolls left where they are: standing up without dragging the feet in."""
+        pose = dict(RESET_POSE)
+        pose.update({n: float(angles[n]) for n in ("RightHipLR", "LeftHipLR") if n in angles})
+        return pose
     LEGS = [n for n in NAMES if "Hip" in n or "Knee" in n or "Ankle" in n]
 
-    def _sim_recenter(self, a):
+    def _sim_recenter(self, a, rounds=None, slow=None):
         """After a get-up: step a leg left splayed back in (recovery.recenter_steps). True when the hip rolls are
-        back at the reset pose."""
-        for _ in range(self.RECENTER_ROUNDS + 1):
+        back at the reset pose. From a wide stance (the hips loaded at their limit) the quick steps, slow=1."""
+        rounds = self.RECENTER_ROUNDS if rounds is None else rounds
+        slow = recovery.RECENTER_SLOW if slow is None else slow
+        for _ in range(rounds + 1):
             sp = recovery.splayed_legs(self.sim._read(self.LEGS))
             if not sp:
                 return True
-            if _ == self.RECENTER_ROUNDS or a.stop.is_set() or self.sim.torso_tilt_deg() > 30:
+            if _ == rounds or a.stop.is_set() or self.sim.torso_tilt_deg() > 30:
                 return False
-            for ang, ms, w in recovery.recenter_steps(self.sim._read(self.LEGS), sp[0]):
+            for ang, ms, w in recovery.recenter_steps(self.sim._read(self.LEGS), sp[0], slow=slow):
                 if a.stop.is_set():
                     return False
                 self.sim.set_servos_angles(ang, ms)
                 self.sim.wait(w)
         return False
 
-    def _robot_recenter(self, a, robot):
+    def _robot_recenter(self, a, robot, rounds=None, slow=None):
         """The robot version of _sim_recenter, through the gate, stopping if it tips. Returns a problem or None."""
-        for k in range(self.RECENTER_ROUNDS + 1):
+        rounds = self.RECENTER_ROUNDS if rounds is None else rounds
+        slow = recovery.RECENTER_SLOW if slow is None else slow
+        for k in range(rounds + 1):
             res, e = self._call("servo read", lambda: robot.get_servos_angles(self.LEGS))
             if e:
                 return f"cannot read the legs ({e})"
@@ -925,7 +945,7 @@ class Controller:
             sp = recovery.splayed_legs(ang, tol=recovery.RECENTER_TOL + 1)  # whole-degree encoders, a degree short
             if not sp:
                 return None
-            if k == self.RECENTER_ROUNDS:
+            if k == rounds:
                 return f"the {sp[0].lower()} leg is still out ({ang[sp[0] + 'HipLR']:.0f} deg hip roll) after {k} tries"
             locked = self._locked_servos(robot)
             if locked:
@@ -935,7 +955,7 @@ class Controller:
             if err:
                 return f"cannot read the robot's pose ({err})"
             self._event("info", f"get up: stepping the {sp[0].lower()} leg in (hip roll {ang[sp[0] + 'HipLR']:.0f} deg)")
-            for target, ms, w in recovery.recenter_steps(ang, sp[0]):
+            for target, ms, w in recovery.recenter_steps(ang, sp[0], slow=slow):
                 if a.stop.is_set():
                     return None
                 with self._gate_lock:
@@ -1304,8 +1324,8 @@ class Controller:
     def _sim_gait(self, act):
         """The simulator's own walk: AppWalk, the robot's recorded firmware walk played back (appwalk.AppWalkSim);
         SwayStep (sim_extras.SimGait) only when walk_method 'sway' was allowed (archived, YANSHEE_ALLOW_SWAY=1)."""
-        gait = (appwalk.AppWalkSim(self.sim, balance=self.balance) if self.walk_method == "app"
-                else sim_extras.SimGait(self.sim))
+        gait = (appwalk.AppWalkSim(self.sim, balance=self.balance, ramp=(self.RAMP_START, self.RAMP_STEP_S))
+                if self.walk_method == "app" else sim_extras.SimGait(self.sim))
 
         def text(p):
             return f"sim: {self._robot_method_name()}, " + gait.describe(p.get("speed_v", 0), p.get("speed_h", 0),
@@ -1371,6 +1391,13 @@ class Controller:
             refusal = self._battery_refusal(use_sim and not use_robot, use_robot)
             if refusal:
                 return self._fail(refusal, level="warn")
+            if use_robot and self._robot_posture not in (None, "upright", "tilted"):
+                # 2 Nov 2026: walks were sent to a robot lying on its back and its legs kicked on the floor
+                return self._fail(f"gait: the robot is lying {self._robot_posture.replace('_', ' ')}: Get up first "
+                                  "(or wait for the auto get-up)", level="warn")
+            if use_robot and abs(speed_v) >= self.FAST_WALK_WARN:
+                self._event("warn", f"speed {abs(speed_v)} on the robot: on 2 Nov 2026 forward walks at speed 5 fell on "
+                                    "their back 4 times out of 6 within 1-2 s (speeds 1-2 never fell); someone ready to catch it")
             why = self._begin(gen, robot if use_robot else None)
             if why:
                 return self._fail(f"gait {why}", level="warn")
@@ -1409,6 +1436,14 @@ class Controller:
                     + (f" (stops without a keepalive for {lease:g} s)" if lease else ""))
         return {"ok": True, "target": target, "updated": False}
 
+    FAST_WALK_WARN = 4  # a robot walk at this speed or more gets a warning (speed 5 fell 4 of 6 times on 2 Nov 2026)
+    # Speed ramp on the robot (2 Nov 2026): the firmware's start at speed 5 lurches the torso 15-20 deg back within
+    # 0.8 s and the robot fell on its back 4 times in 9 such starts; starts at speed 1-2 do not lurch. So a walk asked
+    # above RAMP_START begins at RAMP_START and steps up by 1 every RAMP_STEP_S (the firmware takes speed changes in
+    # place), and on release steps down to RAMP_START every RAMP_DOWN_S before the app's stop. Turns do not ramp.
+    RAMP_START = 2
+    RAMP_STEP_S = 0.5
+    RAMP_DOWN_S = 0.4
     REFLEX_MARGIN_M = 0.015  # capture point this far outside the support circle while standing = about to tip
     APP_TURN_RESEND_S = 0.4  # the mobile app resends its turn about every 0.4 s while the stick is held
 
@@ -1474,9 +1509,60 @@ class Controller:
             self._s2r_write("walk_cmd", v=0, h=0, turn=t, period=params["period"], wave=params["wave"])
             return robot.rest.motion_control("start_async", name, "v1", "left", "normal", 0, int(time.time() * 1000))
         params["_turn"] = None
-        # which command started each walk, for tools/extract_appwalk.py (the simulator's copy of the robot's walk)
-        self._s2r_write("walk_cmd", v=v, h=h, turn=0, period=params["period"], wave=params["wave"])
-        return robot.rest.gait(v, h, params["steps"], params["period"], params["wave"])
+        cur = None if new else prev.get("_ramp")
+        v1, h1 = self._ramp_step(cur, (v, h), self.RAMP_START if cur is None else None)
+        params["_ramp"], params["_ramp_t"] = (v1, h1), time.monotonic()
+        # which command started each walk, for tools/extract_appwalk.py (the simulator's copy of the robot's walk):
+        # with a ramp the walk starts at v1/h1 and reaches target_v/target_h in steps (ramp rows)
+        self._s2r_write("walk_cmd", v=v1, h=h1, turn=0, period=params["period"], wave=params["wave"],
+                        target_v=v, target_h=h, ramp=(v1, h1) != (v, h))
+        return robot.rest.gait(v1, h1, params["steps"], params["period"], params["wave"])
+
+    @classmethod
+    def _ramp_step(cls, cur, target, first=None):
+        """The next (v, h) toward target: from a standing start (cur None) no more than `first` in size; from cur,
+        one step of 1 per component. Signs follow the target; a component already at its target stays."""
+        out = []
+        for c, t in zip(cur or (None, None), target):
+            if c is None:
+                out.append(max(-first, min(first, t)) if first is not None else t)
+            elif t > c:
+                out.append(c + 1)
+            elif t < c:
+                out.append(c - 1)
+            else:
+                out.append(c)
+        return tuple(out)
+
+    def _ramp_tick(self, act, robot):
+        """Called from the walk's loop: the next ramp step when due. Returns an error text or None."""
+        p = act.params
+        cur, target = p.get("_ramp"), (p.get("speed_v", 0), p.get("speed_h", 0))
+        if not cur or tuple(cur) == target or time.monotonic() - p.get("_ramp_t", 0.0) < self.RAMP_STEP_S:
+            return None
+        nxt = self._ramp_step(cur, target)
+        res, err = self._call("gait ramp", lambda: robot.rest.gait(nxt[0], nxt[1], p["steps"], p["period"], p["wave"]))
+        if err:
+            return err
+        p["_ramp"], p["_ramp_t"] = nxt, time.monotonic()
+        self._s2r_write("walk_cmd", v=nxt[0], h=nxt[1], turn=0, period=p["period"], wave=p["wave"], target_v=target[0],
+                        target_h=target[1], ramp=True)
+        act.detail = f"robot: AppWalk at {max(abs(nxt[0]), abs(nxt[1]))} of {max(abs(target[0]), abs(target[1]))}, the sim mirrors it"
+        return None
+
+    def _ramp_down(self, act, robot):
+        """On release: step the speed down to RAMP_START before the app's stop (a stop from speed 5 is also sudden)."""
+        p = act.params
+        cur = p.get("_ramp")
+        while cur and max(abs(cur[0]), abs(cur[1])) > self.RAMP_START and not act.hard:
+            cur = self._ramp_step(cur, (max(-self.RAMP_START, min(self.RAMP_START, cur[0])),
+                                        max(-self.RAMP_START, min(self.RAMP_START, cur[1]))))
+            self._s2r_write("walk_cmd", v=cur[0], h=cur[1], turn=0, period=p["period"], wave=p["wave"], ramp=True, down=True)
+            res, err = self._call("gait ramp down", lambda: robot.rest.gait(cur[0], cur[1], p["steps"], p["period"], p["wave"]))
+            if err:
+                return
+            p["_ramp"] = cur
+            time.sleep(self.RAMP_DOWN_S)
 
     def _node_turns(self, robot):
         """The robot link's stream when turns go through it: the balance runs on the robot and the node has the
@@ -1798,9 +1884,17 @@ class Controller:
                     self._event("warn", "the simulated robot could not get up by itself and was stood up"
                                 + ("" if mo else f" (no getup_{posture} motion in motions/builtin)"))
                     return
-                self.sim.set_servos_angles(dict(RESET_POSE), 1000)  # end where Reset ends (Base_GetupF ends crouched)
-                self.sim.wait(self.RESET_MOVE_S)
-                back = self._sim_recenter(a)  # a leg left splayed (the loaded foot gripped the floor): step it in
+                hips = self._wide_hips(self.sim._read(["RightHipLR", "LeftHipLR"]))
+                if hips:  # the crouch is wide: stand up wide, then step the legs in (closing them loaded stalls the hips)
+                    self._event("info", "get up: the hips are wide ({}); standing up wide-legged, then stepping the legs in"
+                                .format(", ".join(f"{n} {v:.0f}" for n, v in hips.items())))
+                    self.sim.set_servos_angles(self._stand_wide_pose(hips), 1200)
+                    self.sim.wait(1.4)
+                    back = self._sim_recenter(a, rounds=self.RECENTER_ROUNDS + 1, slow=1.0)  # quick: the hips are loaded
+                else:
+                    self.sim.set_servos_angles(dict(RESET_POSE), 1000)  # end where Reset ends
+                    self.sim.wait(self.RESET_MOVE_S)
+                    back = self._sim_recenter(a)  # a leg left splayed (the loaded foot gripped the floor): step it in
                 self._event("info" if back else "warn",
                             f"the simulated robot got up from lying {'face down' if posture == 'front' else 'on its back'}"
                             + (" and stands in the reset pose" if back else ", but a leg is still splayed: press Reset"))
@@ -1834,19 +1928,37 @@ class Controller:
             def run(a):
                 if not self._wait_robot_motion(a, robot, "v1", total_s or 0) or a.stop.is_set():
                     return
-                if then_reset:  # Base_GetupF ends in a wide crouch: the robot's own reset closes it (as tested)
+                wide = {}
+                if then_reset:  # Base_GetupF ends in a crouch, sometimes with the hips wide
                     locked = self._locked_servos(robot)
                     if locked:
-                        self._event("warn", f"get up: {', '.join(locked)} stall-locked while closing the crouch (grippy "
-                                            "floor), so no reset: lay the robot down, switch those servos to program mode, "
-                                            "then Reset")
+                        self._event("warn", f"get up: {', '.join(locked)} stall-locked during {motion}: no reset. Hold the "
+                                            "robot and use 'Free stalled servos' (limp, work, reset)")
                         return
-                    r, e = self._call("get up reset", lambda: robot.play_builtin("reset"))
-                    if e:
-                        self._event("warn", e)
-                        return
-                    if not self._wait_robot_motion(a, robot, "v1", ((r.get("data") or {}).get("total_time") or 1200) / 1000):
-                        return
+                    res_h, e = self._call("servo read", lambda: robot.get_servos_angles(["RightHipLR", "LeftHipLR"]))
+                    wide = self._wide_hips({n: float(v) for n, v in (res_h.get("data") or {}).items()}) if not e else {}
+                    if wide:  # stand up without closing the hips (closing them loaded stalls the servos, 2 Nov 2026)
+                        self._event("info", "get up: the hips are wide ({}); standing up wide-legged, then stepping the "
+                                            "legs in".format(", ".join(f"{n} {v:.0f}" for n, v in wide.items())))
+                        err = self._resync_gate(robot)
+                        if err:
+                            self._event("warn", f"get up: cannot read the robot's pose ({err})")
+                            return
+                        with self._gate_lock:
+                            gate = self._live_gate(robot)
+                            status, info, rt = (gate.command(self._stand_wide_pose(wide), 1200) if gate is not None
+                                                else ("error", "robot disconnected", 1200))
+                        if status != "sent":
+                            self._event("warn", f"get up: standing up wide-legged not sent ({info})")
+                            return
+                        a.stop.wait(max(1.4, rt / 1000 + 0.3))
+                    else:
+                        r, e = self._call("get up reset", lambda: robot.play_builtin("reset"))
+                        if e:
+                            self._event("warn", e)
+                            return
+                        if not self._wait_robot_motion(a, robot, "v1", ((r.get("data") or {}).get("total_time") or 1200) / 1000):
+                            return
                 if a.stop.is_set():
                     return
                 res, e = self._call("gyro", robot.rest.gyro)
@@ -1857,6 +1969,11 @@ class Controller:
                 if ex is not None and recovery.posture(ex) != "upright":
                     self._event("warn", f"get up: {motion} did not stand the robot up (euler-x {ex:+.0f}): no reset move")
                     return
+                if wide:  # step the legs in first (each foot lifted), quick: the hips are loaded; ends in the reset pose
+                    problem = self._robot_recenter(a, robot, rounds=self.RECENTER_ROUNDS + 1, slow=1.0)
+                    if problem:
+                        self._event("warn", f"get up: {problem}")
+                        return
                 # then exactly where the Reset button ends: RESET_POSE through the gate (GetupRear ends a degree or
                 # two off it, the reset motion's arms too)
                 warn, e = self._robot_reset_pose(robot, True)
@@ -1866,9 +1983,10 @@ class Controller:
                 if e:
                     return
                 a.stop.wait(self.RESET_MOVE_S)
-                problem = self._robot_recenter(a, robot)  # a leg left splayed: step it in, then the reset pose
-                if problem:
-                    self._event("warn", f"get up: {problem}")
+                if not wide:
+                    problem = self._robot_recenter(a, robot)  # a leg left splayed: step it in, then the reset pose
+                    if problem:
+                        self._event("warn", f"get up: {problem}")
             if self._launch(act, run, gen) is None:
                 self._undo_robot(robot)
                 return self._fail("get up cancelled by STOP", level="warn")
@@ -1880,6 +1998,41 @@ class Controller:
     def _locked_servos(robot):
         """Stall-locked servos (recovery.locked_servos)."""
         return recovery.locked_servos(robot.rest)
+
+    FREE_LIMP_S = 2.0  # how long a stalled servo is left limp before it is put back to work
+
+    def free_stalled_servos(self):
+        """Robot: find the stall-locked servos (they refuse a command to their own angle: a hip roll dragged against
+        the floor, an arm pinned under the body), make them limp for FREE_LIMP_S, put them back to work and play the
+        robot's reset. SOMEONE MUST HOLD THE ROBOT: a limp hip gives way. Used by hand on 2 Nov 2026 after a face-down
+        get-up left both hip rolls and a shoulder locked. Returns which servos were freed."""
+        gen, use_sim, use_robot, robot = self._snapshot()
+        if robot is None:
+            return self._fail("free stalled servos: no robot connected", level="warn")
+        if self._robot_activity_running():
+            return self._fail("free stalled servos: wait for the robot's activity to finish", level="warn")
+        locked = self._locked_servos(robot)
+        if not locked:
+            self._event("info", "free stalled servos: none of the servos is locked")
+            return {"ok": True, "freed": [], "locked_after": []}
+        self._event("warn", f"free stalled servos: {', '.join(locked)} are locked; making them limp for {self.FREE_LIMP_S:g} s, "
+                            "then work mode and the robot's reset. Hold the robot.")
+        for mode, pause in (("program", self.FREE_LIMP_S), ("work", 0.5)):
+            res, err = self._call(f"servo mode {mode}", lambda m=mode: robot.rest.set_servo_mode(m, locked))
+            if err:
+                return self._fail(f"free stalled servos: {err}")
+            time.sleep(pause)
+        res, err = self._call("reset", lambda: robot.play_builtin("reset"))
+        if err:
+            return self._fail(f"free stalled servos: {err}")
+        time.sleep(((res.get("data") or {}).get("total_time") or 1200) / 1000 + 0.5)
+        with self._gate_lock:
+            self._gate_stale = True
+        after = self._locked_servos(robot)
+        self._event("info" if not after else "warn", "free stalled servos: " + (f"{', '.join(locked)} freed" if not after else
+                    f"{', '.join(after)} still locked: lay the robot down and try again, or power-cycle it"))
+        self._s2r_write("servos_freed", locked=locked, still_locked=after)
+        return {"ok": True, "freed": [n for n in locked if n not in after], "locked_after": after}
 
     def set_auto_get_up(self, enable):
         """Stand the real robot up by itself after a real fall (robot/both modes)."""
@@ -2140,6 +2293,16 @@ class Controller:
                 continue
             if p.get("turn") and not p.get("speed_v") and not p.get("speed_h"):
                 continue  # turning with TurnLeft/TurnRight (AppWalk): no gait running, wait for the release
+            link = self._link
+            if link is not None and link[0] is robot and link[1].alive and link[1].silence > self.link_watchdog_s:
+                # the link has been quiet longer than the robot's watchdog allows: the robot has stopped (or is about to
+                # stop) by itself; a later speed command would restart it at full speed without the ramp (seen 2 Nov
+                # 2026), so this walk ends here and a new press starts a new one
+                raise RuntimeError(f"the robot link went quiet for {link[1].silence:.1f} s: the robot stops itself, "
+                                   "press the key again when it is back")
+            err = self._ramp_tick(act, robot)
+            if err:
+                raise RuntimeError(err)
             res, err = self._call("gait state", robot.rest.gait_state)
             if res is not None:
                 last_ok = time.monotonic()
@@ -2157,7 +2320,10 @@ class Controller:
         if p.get("_pending"):
             return  # nothing was started since the last stop (that stop was already sent)
         if act.stop.is_set() and not act.hard:
-            # a normal stop (release, gait_stop, lost lease): the mobile app's stop, a gait command with every value 0
+            # a normal stop (release, gait_stop, lost lease): down to RAMP_START, then the mobile app's stop, a gait
+            # command with every value 0
+            if not p.get("_turn"):
+                self._ramp_down(act, robot)
             self._s2r_write("walk_cmd", v=0, h=0, turn=0, period=0, wave=p.get("wave", False))
             self._call("gait stop", lambda: self._robot_turn_release(robot, p, p.get("wave", False)))
         else:

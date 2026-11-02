@@ -462,6 +462,7 @@
   $("#getupBtn").addEventListener("click", (e) => { walkRelease(); busy(e.currentTarget, () => api("POST", "/api/getup")); });
   $("#autoGetup").addEventListener("change", (e) => api("POST", "/api/autogetup", { enable: e.currentTarget.checked }));
   $("#balance").addEventListener("change", (e) => api("POST", "/api/balance", { enable: e.currentTarget.checked }));
+  $("#freeServosBtn").addEventListener("click", () => api("POST", "/api/servos/free"));
   for (const [id, direction] of [["#tipFront", "front"], ["#tipBack", "back"]]) {
     $(id).addEventListener("click", (e) => {
       if (mode() !== "sim") { toast("Tip over is a simulator test: switch to Sim mode first.", "info"); return; }

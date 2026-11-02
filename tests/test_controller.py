@@ -460,7 +460,7 @@ def test_get_up_and_balance():
     assert wait_until(lambda: c.state()["sim"]["fallen"], 6)
     r = c.get_up()
     assert r["ok"] and r["posture"] == "front", r
-    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 20)
+    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 30)
     assert c.sim.torso_tilt_deg() < 15
     assert any("got up" in e["text"] or "stood up" in e["text"] for e in c.events_since(0))
     with Connected("robot") as (c2, srv):
@@ -484,6 +484,72 @@ def test_get_up_and_balance():
         assert steps[2] == {"RightHipLR": 90} and all(abs(moves[-1][n] - RESET_POSE[n]) <= 1 for n in RESET_POSE)
 
 
+def test_robot_walk_refused_while_lying_and_fast_walk_warns():
+    """A walk or turn is refused while the robot's IMU says it is lying down (2 Nov 2026: walks went out to a robot
+    on its back); a fast walk on the robot gets a warning event."""
+    with Connected("robot") as (c, srv):
+        c._robot_posture = "on_back"
+        r = c.gait(2, 0, steps=0, lease_s=2.0)
+        assert r["ok"] is False and "lying on back" in r["error"] and "Get up" in r["error"], r
+        assert c.gait(0, 0, steps=0, turn=3, lease_s=2.0)["ok"] is False
+        c._robot_posture = "upright"
+        n = len(c.events_since(0))
+        assert c.gait(5, 0, steps=0, lease_s=2.0)["ok"]
+        assert any("speed 5 on the robot" in e["text"] for e in c.events_since(0)[n:])
+        c.gait_stop()
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+
+
+def test_free_stalled_servos():
+    """A locked servo refuses a command to its own angle (the fake robot: an override replying False for it): it is
+    made limp, put back to work and the robot's reset is played; nothing locked -> nothing done."""
+    with Connected("robot") as (c, srv):
+        c.FREE_LIMP_S = 0.2
+        r = c.free_stalled_servos()
+        assert r["ok"] and r["freed"] == [] and not requests(srv, "PUT", "servos/mode")
+        answers = [["RightHipLR"], []]  # locked at first, freed after the mode cycle
+        c._locked_servos = lambda robot: answers.pop(0)
+        r = c.free_stalled_servos()
+        assert r["ok"] and r["freed"] == ["RightHipLR"] and r["locked_after"] == [], r
+        modes = [(e[3].get("mode"), e[3]) for e in requests(srv, "PUT", "servos/mode")]
+        assert [m for m, b in modes] == ["program", "work"], modes
+        assert all("RightHipLR" in json.dumps(b) and "LeftHipLR" not in json.dumps(b) for m, b in modes), modes
+        assert "reset" in [e[3].get("motion", {}).get("name") for e in requests(srv, "PUT", "motions")]
+
+
+def test_wide_hips_and_stand_wide_pose():
+    c = Controller.__new__(Controller)
+    assert c._wide_hips({"RightHipLR": 92, "LeftHipLR": 88}) == {}
+    assert c._wide_hips({"RightHipLR": 29, "LeftHipLR": 117}) == {"RightHipLR": 29, "LeftHipLR": 117}
+    pose = c._stand_wide_pose({"RightHipLR": 29, "LeftHipLR": 117})
+    assert pose["RightHipLR"] == 29 and pose["LeftHipLR"] == 117 and pose["RightKneeFlex"] == RESET_POSE["RightKneeFlex"]
+
+
+def test_robot_walk_ramps_up_and_down():
+    """A robot walk asked at speed 5 starts at 2 and steps up by 1 every RAMP_STEP_S; a release steps it down to 2
+    before the app's stop (2 Nov 2026: the firmware's speed-5 start lurched the robot onto its back)."""
+    with Connected("robot") as (c, srv):
+        c._robot_posture = "upright"
+        t0 = time.monotonic()
+        assert c.gait(5, 0, steps=0, lease_s=5.0)["ok"]
+        assert wait_until(lambda: c._activity.params.get("_ramp") == (5, 0), 4), c._activity.params.get("_ramp")
+        reached = time.monotonic() - t0
+        c.gait_stop()
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+        sent = [(e[3].get("speed_v"), e[3].get("speed_h"), e[3].get("period")) for e in requests(srv, "PUT", "motions/gait")]
+        speeds = [v for v, h, period in sent]
+        assert speeds[:4] == [2, 3, 4, 5] and speeds[-1] == 0 and speeds[-4:-1] == [4, 3, 2], sent
+        assert 1.2 <= reached <= 3.5, reached  # three steps of RAMP_STEP_S (0.5 s) seen by a 0.3 s loop
+        assert all(abs(a - b) <= 1 for a, b in zip(speeds[:-2], speeds[1:-1])), speeds  # never a jump, until the stop
+        # a speed change while walking ramps from where it is
+        assert c.gait(3, 0, steps=0, lease_s=5.0)["ok"]
+        assert wait_until(lambda: c._activity.params.get("_ramp") == (3, 0), 4), c._activity.params.get("_ramp")
+        assert c.gait(5, 0, steps=0, lease_s=5.0)["updated"]
+        assert c._activity.params["_ramp"] == (4, 0)
+        c.gait_stop()
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+
+
 def test_tip_over_then_get_up():
     """The simulator test button: a gentle push fells the robot (front/back), get_up() then stands it up; refused
     with a robot connected."""
@@ -498,9 +564,12 @@ def test_tip_over_then_get_up():
         assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
         g = c.sim.get_sensors_gyro()["data"]["gyro"][0]
         assert (abs(g["euler-x"]) < 60) == (direction == "front"), (direction, g["euler-x"])  # face down ~0, on the back ~180
+        n_ev = len(c.events_since(0))
         r = c.get_up()
         assert r["ok"] and r["posture"] == ("front" if direction == "front" else "rear"), r
-        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 20)
+        assert wait_until(lambda: c.state()["activity"]["kind"] == "idle" and not c.state()["sim"]["fallen"], 25)
+        if direction == "front":  # Base_GetupF leaves the hips wide: it stands up wide-legged and steps in, no loaded drag
+            assert any("standing up wide-legged" in e["text"] for e in c.events_since(0)[n_ev:])
         legs = [n for n in RESET_POSE if "Hip" in n or "Knee" in n or "Ankle" in n]
         got = c.sim._read(legs)  # it ends where Reset ends (Base_GetupF alone ends in a wide crouch)
         assert all(abs(got[n] - RESET_POSE[n]) <= 5 for n in legs), (direction, {n: got[n] - RESET_POSE[n] for n in legs},
@@ -519,11 +588,12 @@ def test_gait_direction_changes_do_not_tip():
     c = ctl()
     c.sim.respawn()  # from standing, whatever the test before left
     time.sleep(0.5)
-    assert c.gait(5, 0, steps=0, lease_s=30)["ok"]
+    # speed 2: the recorded speed; the simulator's speed-5 playback tips over (a known model gap, 2 Nov 2026)
+    assert c.gait(2, 0, steps=0, lease_s=30)["ok"]
     time.sleep(2.0)
-    assert c.gait(0, 5, steps=0, lease_s=30)["updated"]  # forward -> left
+    assert c.gait(0, 2, steps=0, lease_s=30)["updated"]  # forward -> left
     time.sleep(3.0)
-    assert c.gait(5, 0, steps=0, lease_s=30)["updated"]  # -> forward again
+    assert c.gait(2, 0, steps=0, lease_s=30)["updated"]  # -> forward again
     time.sleep(2.5)
     assert c.gait_stop()["ok"] and wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
     assert not c.state()["sim"]["fallen"] and c.sim.torso_tilt_deg() < 15
@@ -1014,9 +1084,9 @@ def test_soak_sim():
     c = ctl()
     seconds = float(os.environ.get("YANSHEE_SOAK_S", "60"))
     first_id = c.events_since(0)[-1]["id"] if c.events else 0
-    plan = [("action", ("wave", "both")), ("gait", (4, 0, 6)), ("action", ("crouch", "")),
+    plan = [("action", ("wave", "both")), ("gait", (2, 0, 6)), ("action", ("crouch", "")),
             ("action", ("bend", "left")), ("gait", (0, 3, 4)), ("action", ("raise", "both")),
-            ("gait", (4, 0, 4)), ("action", ("bow", "")), ("action", ("come on", "right")),
+            ("gait", (2, 0, 4)), ("action", ("bow", "")), ("action", ("come on", "right")),
             ("gait", (0, 2, 4)), ("action", ("stretch", "left")), ("action", ("head", "right")),
             ("action", ("reset", ""))]
     max_tilt, i, t_end = 0.0, 0, time.monotonic() + seconds

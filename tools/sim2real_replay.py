@@ -74,6 +74,17 @@ def walks(path):
     for r in sorted(rows + rrows, key=lambda r: r["t"]):
         by[r["kind"]].append(r)
     resets, end = by["shadow_reset"], max(r["t"] for r in rows + rrows)
+    if not resets:  # no shadow in this session (link down): one walk per burst of firmware gait frames
+        gait = [f for f in by["frame"] if f.get("src") == "/gait_node"]
+        groups, cur = [], []
+        for f in gait:
+            if cur and f["t"] - cur[-1]["t"] > 1.0:
+                groups.append(cur)
+                cur = []
+            cur.append(f)
+        if cur:
+            groups.append(cur)
+        resets = [{"t": g[0]["t"] - 0.2, "method": "AppWalk", "kind": "shadow_reset"} for g in groups if len(g) >= 25]
     enc_t = [e["t"] for e in by["enc"]]
     out = []
     for i, rs in enumerate(resets):

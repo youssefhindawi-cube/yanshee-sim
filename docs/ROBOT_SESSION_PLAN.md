@@ -198,7 +198,11 @@ Done on the robot on 2 Nov 2026 (office, smooth floor, `robot_dump/*_20261102_*.
   ResetSwitch 1.74 s after the turn started, 24 deg turned, 7 deg lean. A needless "exit" 3 s later each time is
   fixed (hal reports ResetSwitch, never the turn's finish).
 - **E8, Get up ends in the reset pose**: on its back (after the balance fall) 11 s, face down 18 s; both upright
-  with every encoder within 2 deg of the reset pose, no leg needed stepping in.
+  with every encoder within 2 deg of the reset pose, no leg needed stepping in. A second face-down get-up in the
+  afternoon stuck: the hips stayed wide during Base_GetupF (the robot leaning right) and the reset stall-locked both
+  hip rolls and a shoulder (docs/SIM2REAL_FINDINGS.md "The hip stall"). The get-up now stands up wide-legged and
+  steps the legs in instead of dragging the planted feet together, and "Free stalled servos" (hold the robot) undoes
+  a lock. To test: more face-down get-ups, watching the hip-roll encoders after the motion and the locked check.
 - **D3, the walk directions the simulator was missing**: backward, right, left, and the four diagonals, one 5-6 s
   walk each at speed 2, in cancelling pairs; `model/appwalk.json` rebuilt with 7 of the 8: the backward-left walk
   never settled into a repeating cycle (its leg frames differ by a median 2 deg from one cycle to the next, the
@@ -206,6 +210,11 @@ Done on the robot on 2 Nov 2026 (office, smooth floor, `robot_dump/*_20261102_*.
   the robot's right. More walks per direction, stopping at different moments, are still worth recording.
 - **D2, distance**: 45 cm in 6.1 s of walking at speed 2 (tape measure) = 7.4 cm/s; the simulator's playback of the
   same frames goes 11 cm/s, so Sim mode distances are about 1.5x the robot's. Heading drifted +5 deg (left).
+- **Speed 5 and the ramp** (afternoon): un-ramped speed-5 starts lurched 15-20 deg back and fell 4 of 9; with the
+  speed ramp (2, +1 per 0.5 s) 0 of 3, lean within 13 deg. Tables per speed (1, 2, 5) in model/appwalk.json; the
+  simulator's playback of the speed-5 table falls as the robot did (docs/SIM2REAL_FINDINGS.md "Speed ramp"). Still
+  to record: speeds 3 and 4 (ramped walks are not used for tables: walk them un-ramped only with a catcher, or
+  accept the nearest table).
 - **Wi-Fi drop, seen live**: 2 minutes off the network right after the E6 tests, with power saving off. Not the
   supply (no under-voltage flag), not a radio disconnect (no carrier loss in the kernel log): the channel. The data
   rate fell 72 -> 14 Mbit/s over the session, 182 excessive retries, 12 % loss and 2 s stalls to the router from the

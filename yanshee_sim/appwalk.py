@@ -75,13 +75,57 @@ class AppWalkSim:
     FRAME_S = 0.02
     STAND_S = 0.1
 
-    def __init__(self, sim, max_tilt_deg=25.0, table=None, balance=False):
+    def __init__(self, sim, max_tilt_deg=25.0, table=None, balance=False, ramp=None):
         """balance: True (or a balance.Balance) adds IMU ankle corrections from the simulator's emulated IMU (19 per
-        second, with noise, as the robot's) on top of the recorded frames, every FRAME_S."""
+        second, with noise, as the robot's) on top of the recorded frames, every FRAME_S. ramp: (start, step_s) as
+        the controller ramps the robot (a walk asked above `start` begins at `start` and goes up by 1 every step_s of
+        simulated time), so the simulator plays the same tables in the same order."""
         self.sim, self.max_tilt = sim, max_tilt_deg
         self.data = table if table is not None else load()
         self.steps_done, self.status = 0, "idle"
         self.balance = Balance() if balance is True else balance or None
+        self.ramp, self.eff_speed, self._ramp_t = ramp, None, None
+        self.tables_played = []  # the table names a run played, in order (tests, the GUI's detail)
+
+    @classmethod
+    def recorded(cls, table, d):
+        """{speed or None: table key} of the walks recorded for direction d ('forward' and 'forward@5' ...)."""
+        out = {}
+        for key, t in table.get("walks", {}).items():
+            base, _, sp = key.partition("@")
+            if base == d:
+                out[int(sp) if sp else t.get("speed")] = key
+        return out
+
+    @classmethod
+    def table_for(cls, table, d, speed):
+        """The key of the table to play for direction d at this speed: the exact speed, else the nearest recorded
+        (the lower one on a tie), else the plain direction; None when the direction is not recorded."""
+        rec = cls.recorded(table, d)
+        if not rec:
+            return None
+        if speed in rec:
+            return rec[speed]
+        known = sorted(s for s in rec if s is not None)
+        if known:
+            return rec[min(known, key=lambda s: (abs(s - speed), s))]
+        return rec.get(None) or next(iter(rec.values()))
+
+    def _walk_speed(self, p):
+        """The speed the simulator plays now: the asked one, or the ramp's current step toward it."""
+        asked = max(abs(p.get("speed_v", 0)), abs(p.get("speed_h", 0)))
+        if not self.ramp or not asked:
+            self.eff_speed = asked
+            return asked
+        start, step_s = self.ramp
+        now = self.sim.data.time
+        if self.eff_speed is None or self._ramp_t is None:
+            self.eff_speed, self._ramp_t = min(asked, start), now
+        elif self.eff_speed < asked and now - self._ramp_t >= step_s:
+            self.eff_speed, self._ramp_t = self.eff_speed + 1, now
+        elif self.eff_speed > asked:
+            self.eff_speed = asked
+        return self.eff_speed
 
     def _assist(self):
         if self.balance is None:
@@ -132,8 +176,8 @@ class AppWalkSim:
         if not data:
             return "the simulator has no recording of the robot's walk (model/appwalk.json: tools/extract_appwalk.py)"
         d = direction(speed_v, speed_h)
-        if d and d not in data.get("walks", {}):
-            have = ", ".join(sorted(data.get("walks", {}))) or "none"
+        if d and not cls.recorded(data, d):
+            have = ", ".join(sorted({k.partition("@")[0] for k in data.get("walks", {})})) or "none"
             return (f"the robot has not been recorded walking {d.replace('_', ' and ')} yet (recorded: {have}); walk "
                     f"it with the robot connected, then run tools/extract_appwalk.py")
         if not d and turn and TURN_NAMES[1 if turn > 0 else -1] not in data.get("turns", {}):
@@ -209,8 +253,11 @@ class AppWalkSim:
                     status = "done"
                     break
                 continue
-            t = AppWalkTable(self.data["walks"][name])
-            self.sim.wait(self.data["walks"][name].get("start_delay_s", 0.3))  # the firmware takes this long to start
+            self.eff_speed = self._ramp_t = None
+            tname = self.table_for(self.data, name, self._walk_speed(dict(params)))
+            t = AppWalkTable(self.data["walks"][tname])
+            self.tables_played.append(tname)
+            self.sim.wait(self.data["walks"][tname].get("start_delay_s", 0.3))  # the firmware takes this long to start
             k, half, why = 0, t.P // 2, None
             while why is None:
                 p = dict(params)
@@ -224,6 +271,12 @@ class AppWalkSim:
                     why = "changed"
                 if why:
                     break
+                want = self.table_for(self.data, name, self._walk_speed(p))
+                if want != tname and k >= t.s:  # the speed changed (the ramp, or the key): the firmware changes the
+                    nt = AppWalkTable(self.data["walks"][want])  # gait in place, so switch cycles at the same phase
+                    k = nt.s + (k - t.s) % t.P
+                    t, tname = nt, want
+                    self.tables_played.append(tname)
                 self._send(t.frame(k), 20, bool(p.get("wave", True)))
                 k += 1
                 if k >= t.s and (k - t.s) % half == 0:

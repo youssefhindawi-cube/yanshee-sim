@@ -52,9 +52,10 @@ def direction(v, h):
 
 
 def commands(rows, t0, t1):
-    """(time, direction or None for a stop, speed) of each walk command, laptop clock."""
+    """(time, direction or None for a stop, speed, ramp step?) of each walk command, laptop clock. A ramp step
+    (the controller's speed ramp, 2 Nov 2026) is neither a walk's start nor its stop."""
     cmd = [(r["t"], direction(r["v"], r["h"]) if not r.get("turn") or r["v"] or r["h"] else "turn",
-            max(abs(r["v"]), abs(r["h"])) or None) for r in rows if r["kind"] == "walk_cmd"]
+            max(abs(r["v"]), abs(r["h"])) or None, bool(r.get("ramp") or r.get("down"))) for r in rows if r["kind"] == "walk_cmd"]
     if cmd:
         return cmd
     stats = os.path.join(ROOT, "robot_dump", "walk_stats.jsonl")  # older sessions: the walking statistics
@@ -63,7 +64,7 @@ def commands(rows, t0, t1):
         r = json.loads(line)
         if r.get("kind") == "switch" and r.get("method") == "AppWalk" and t0 <= r["t"] <= t1:
             to = r["switch"].split("->")[1]
-            out.append((r["t"], SWITCH_DIR.get(to, "turn" if to.startswith("turn") else None), None))
+            out.append((r["t"], SWITCH_DIR.get(to, "turn" if to.startswith("turn") else None), None, False))
     return sorted(set(out))
 
 
@@ -88,7 +89,9 @@ def walks_of(path):
         i = bisect.bisect_right(ct, g[0]["t"] + 0.05) - 1
         if i < 0 or not cmd[i][1] or cmd[i][1] == "turn" or not stand or len(walk) < 30:
             continue  # not a walk started by a command we know, or no stand-up at its end
-        stop = next((c[0] for c in cmd[i + 1:]), None)
+        if cmd[i][3]:
+            continue  # started by a ramp step (speed changing within the walk): not a table's worth
+        stop = next((c[0] for c in cmd[i + 1:] if not c[3]), None)  # the next command that is not a ramp step
         out.append({"session": os.path.basename(path)[9:-6], "dir": cmd[i][1], "speed": cmd[i][2], "walk": walk,
                     "stand": stand, "delay_s": g[0]["t"] - cmd[i][0],
                     "stop_k": (stop - g[0]["t"]) / 0.02 if stop else None})
@@ -142,17 +145,36 @@ def align(w, cycle, upto):
     return min(((sh, max(legdiff(w[k], cycle[(k + sh) % P]) for k in ks)) for sh in range(P)), key=lambda x: x[1])
 
 
+UNLOGGED_SPEED = 2  # walks logged without a speed (before 1 Nov 2026) were driven at the mobile app's speed 2
+
+
 def build(walks):
     by = collections.defaultdict(list)
     for w in walks:
         by[w["dir"]].append(w)
     table, notes = {}, []
     for d, ws in by.items():
-        known = collections.Counter(w["speed"] for w in ws if w["speed"])
-        if len(known) > 1:  # the simulator keeps one speed per direction: the one walked most
-            keep = known.most_common(1)[0][0]
-            notes.append(f"{d}: walks at speeds {sorted(known)}; kept speed {keep}")
-            ws = [w for w in ws if w["speed"] == keep]
+        # one table per speed: the speed walked most under the plain direction name (what the simulator plays by
+        # default), the others as direction@speed (2 Nov 2026: speed 5 starts differ from speed 2, and lurch)
+        groups = collections.defaultdict(list)
+        for w in ws:
+            groups[w["speed"] or UNLOGGED_SPEED].append(w)  # the 29 Oct sessions logged no speed: the app's 2
+        order = sorted(groups, key=lambda s: (-len(groups[s]), s))
+        if len(groups) > 1:
+            notes.append(f"{d}: walks at speeds {sorted(groups)}; the plain table is speed {order[0]}")
+        for speed in order:
+            key = d if speed == order[0] else f"{d}@{speed}"
+            entry, more = _direction_table(key, groups[speed])
+            notes.extend(more)
+            if entry is not None:
+                table[key] = entry
+    return _signed_side_tables(table, notes)
+
+
+def _direction_table(d, ws):
+    """The table for one direction at one speed from its walks: (entry or None, notes)."""
+    notes, table = [], {}
+    if True:
         # the start differs with the pose the robot walked off from; the walk the most others start like is kept
         starts = []
         for w in sorted(ws, key=lambda w: -len(w["walk"])):
@@ -162,7 +184,7 @@ def build(walks):
         found = next(((v, w, steady(w["walk"])) for v in starts for w in v if steady(w["walk"])), None)
         if found is None:
             notes.append(f"{d}: no walk long enough to find its repeating cycle; skipped")
-            continue
+            return None, notes
         v, base, (s, e, P) = found
         cycle = base["walk"][s:s + P]
         winds, lags = {}, []
@@ -189,6 +211,10 @@ def build(walks):
             notes.append(f"{d}: {len(starts)} different starts ({[len(x) for x in starts]} walks; the pose it walked "
                          f"off from); kept the start of {len(v)}")
         notes.append(f"{d}: stops after {sorted(round(x) for x in lags)} frames, leaving the cycle at {sorted(winds)}")
+    return table[d], notes
+
+
+def _signed_side_tables(table, notes):
     for d in [k for k in table if k in ("side", "diag")]:  # logged without a sign: the simulator tells which way
         t = table.pop(d)
         (dx, dy), _ = sim_moved(play(t, 3 * len(t["cycle"])), t["stand"])

@@ -523,6 +523,11 @@ def create_app(controller=None, static_dir=STATIC_DIR, close_controller=None, **
         passed (state robot.balance_robot says whether it runs there)."""
         return _reply(ctl().set_balance(body.enable))
 
+    @app.post("/api/servos/free")
+    def servos_free():
+        """Robot: free stall-locked servos (limp, work, reset). Someone must hold the robot: a limp hip gives way."""
+        return _reply(ctl().free_stalled_servos())
+
     @app.post("/api/getup")
     def getup():
         """Stand up after a fall: the robot's GetupFront/GetupRear by its IMU, or the sim's get-up motion (respawn

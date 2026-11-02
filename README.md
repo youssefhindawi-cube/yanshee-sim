@@ -134,7 +134,7 @@ Reset, Pause/Resume of a playing built-in, and these tabs:
 
 | Tab | Contents |
 |---|---|
-| **Motion control** | Walk with the D-pad or the keys (hold to walk, release to stop; speed 1–5, side steps, arm swing); under the D-pad, **Rotate** ↺/↻ (hold, or <kbd>Q</kbd>/<kbd>E</kbd>: the simulator pivots slowly, the robot plays its own turn-around motion per press) and **Get up** (after a fall, chosen by the IMU: face down the robot's own Base_GetupF then reset, on its back GetupRear; the simulator plays the same two motions; both end in the reset pose, as the Reset button does: if a leg is left splayed because its foot gripped the floor, it is stepped in, the weight on the other leg, the foot lifted 14° and swung in), plus two simulator-only **Tip over** buttons that push the robot over gently (front/back) so the fall detection and Get up can be tried; the robot's built-in actions grouped by category (gestures, locomotion, fight, football, get-up, dances with music, v2 layered, your motion files) with direction, speed and repeat. |
+| **Motion control** | Walk with the D-pad or the keys (hold to walk, release to stop; speed 1–5, side steps, arm swing); under the D-pad, **Rotate** ↺/↻ (hold, or <kbd>Q</kbd>/<kbd>E</kbd>: the simulator pivots slowly, the robot plays its own turn-around motion per press) and **Get up** (after a fall, chosen by the IMU: face down the robot's own Base_GetupF then reset, on its back GetupRear; the simulator plays the same two motions; both end in the reset pose, as the Reset button does: if a leg is left splayed because its foot gripped the floor, it is stepped in, the weight on the other leg, the foot lifted 14° and swung in; if Base_GetupF leaves the hips wide it stands up wide-legged and steps in rather than dragging the planted feet together, which stall-locked both hip rolls on 2 Nov 2026) and **Free stalled servos** (robot: a servo that stalled refuses every command until it is made limp and put back to work; hold the robot first), plus two simulator-only **Tip over** buttons that push the robot over gently (front/back) so the fall detection and Get up can be tried; the robot's built-in actions grouped by category (gestures, locomotion, fight, football, get-up, dances with music, v2 layered, your motion files) with direction, speed and repeat. |
 | **Servos & recorder** | 17 sliders by body part with live readback; limp/work per limb group (robot); capture keyframes with runtime and hold, edit and reorder them, preview in sim, play on the target, check report, save/load/delete motion files (JSON and `.hts`). |
 | **Settings & sensors** | Volume, chest/eye LEDs, language, fall management, versions, the IMU numbers with a rolling chart (euler/gyro), add-on sensors, sim battery. |
 | **Voice & vision** | TTS (the robot speaks; in sim the browser does), vision tasks with result cards (only colour detection works in sim), face entry, photo with resolution. |
@@ -196,7 +196,9 @@ every servo frame with the laptop's send time, hal's monitor, firmware log lines
 them; the laptop logs the simulator side (`robot_dump/sim2real_<session>.jsonl`) and clock pings that line the two up.
 The robot's log is copied to `robot_dump/robot_logs/` on disconnect (or `python3 tools/fetch_robot_logs.py --ip IP`);
 `python3 tools/sim2real_report.py` merges them and sums up each walk and the link's delay.
-While the link is up the walk, turn and stop commands go **through it** (the robot passes them to its own REST
+A robot walk asked above speed 2 **ramps**: it starts at 2 and goes up by 1 every half second, and steps down again
+before the stop (the firmware's own start at speed 5 lurched the robot onto its back 4 times in 9 on 2 Nov 2026;
+ramped, 0 in 3); the simulator ramps the same way. Sim mode plays the recorded speed-5 cycle for speeds 4-5 and often tips over, where the ramped robot did not: a known model gap, so test in Sim mode at speeds 1-3. While the link is up the walk, turn and stop commands go **through it** (the robot passes them to its own REST
 server: no new connection over the Wi-Fi for each), and the robot has a **watchdog**: if it hears nothing from the
 laptop for 1.5 s while walking or turning (the laptop sends a heartbeat 4 times a second) it stops itself the
 mobile app's way, so a Wi-Fi drop cannot leave it walking. A link that dies or goes quiet for 5 s is dropped and
@@ -323,7 +325,9 @@ python3 tools/extract_appwalk.py       # every session with a robot log -> model
 ```
 
 Prints per direction how many walks it found, the cycle, where the recorded stops leave it and how far the simulator
-walks in 5 s with them. Run it after a session in which the robot walked a new direction.
+walks in 5 s with them. Run it after a session in which the robot walked a new direction or speed. One table per
+speed: the most walked speed under the plain name (`forward`, speed 2), the others as `forward@5`, `forward@1`; the
+simulator plays the exact speed's table, else the nearest recorded. Walks started by the speed ramp are left out.
 
 ### Balance (IMU) on the walk
 
@@ -716,7 +720,7 @@ Then `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit
 | `tests/test_latency.py` | `tools/latency_test.py` without the robot: the link echo and REST timing locally, ping, Wi-Fi parsing (`iw` and `iwconfig`), the command -> servo timing from a robot log |
 | `tests/test_yanapi_sim.py` | `run_in_sim.py`'s simulated YanAPI (official examples run unchanged), `record_real_motion.py`, `pose_editor.py`, `view.py` |
 
-`python3 -m pytest -q tests` runs all 192 (6–7 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
+`python3 -m pytest -q tests` runs all 198 (7 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
 runs one file. `tests/fake_robot.py` is the fake Yanshee REST server behind the robot tests; run it by hand for GUI
 work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 

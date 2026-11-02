@@ -286,3 +286,69 @@ friction 0.7 (F = fell):
 Next on the robot, in this order: standing still with finger pushes (Balance on, no walking; the robot's log shows
 the offsets), then a 3 s forward walk with someone ready to catch it, then the rest of E7. The robot side stays
 parked (`YANSHEE_ROBOT_BALANCE=1`) until the standing test passes.
+
+## The hip stall in a face-down get-up (2 Nov 2026, afternoon)
+
+Pressing Get up with the robot face down (battery 8.0 V, smooth office floor): Base_GetupF ran its 7 s, the robot's
+reset followed, and the robot tipped onto its right side with **LeftHipLR, RightHipLR and RightShoulderRoll
+stall-locked** (they refused every command; freed by hand: limp 2 s, work, the robot's reset: all 17 back within
+2 deg). The robot's log against the morning's successful face-down get-up (battery 7.2 V, same floor):
+
+- The two IMU traces are identical for 6 s. Then the morning's rose to upright (euler-x 109 -> 100, roll within
+  4 deg); the afternoon's stopped at 94-98 and **rolled right: 7, 14, 20 deg** over the last second of the motion.
+- At the end of Base_GetupF the morning's hip rolls read 89 / 92 (closed, as the motion commands); the afternoon's
+  read **29 / 117**, 60 and 27 deg short: the hips were already stuck during the motion's own close, with the
+  body leaning on the right leg. The reset that followed asked the loaded, stuck hips to drag the feet in: the
+  servos stalled (their readings went to 340 / 76 / 4: locked) and the robot went over at 8.5 s.
+- No hal warnings in that window; the encoders are not read while hal plays a motion (they filled its buffers on
+  29 Oct), so the moment the hips jammed inside the motion is not in the log. Battery 7.9-8.1 V throughout.
+- The same pair (RightHipLR + RightShoulderRoll) locked on 29 Oct on the mat (robot_dump/getup_Base_GetupF_132903).
+
+**What the simulator says about the torque.** After its Base_GetupF the simulated crouch has the hips at -41 / +28
+deg (the real motion ends closed when it goes well: the simulator's hips cannot close it during the motion either).
+Closing them with the robot's reset holds both hip-roll servos at their torque limit (1.15 N m) for the whole move
+and leaves the legs 41 / 14 deg out, at any speed (1 s or 3 s). So the hips are not given more torque than needed:
+they are asked for a move the planted feet will not allow, draw stall current, and the real servo's protection
+locks them. Standing up wide-legged first and stepping each leg in with the foot lifted (the step-in built the day
+before) ends with the legs within 4 deg of the reset pose, but holding the wide stance also keeps the hips at the
+limit (5-7 s with the quick steps, 11 s with the slow ones), so it has to be quick.
+
+**Changed:** when Base_GetupF ends with a hip roll more than 10 deg out (`Controller.HIP_WIDE_DEG`) the get-up no
+longer plays the robot's reset: it stands up wide-legged (reset pose, hips left where they are, 1.2 s) and steps
+the legs in with the quick steps (up to 3 rounds), then the reset move; a stalled servo stops the get-up with a
+message. A **Free stalled servos** button (POST /api/servos/free) does the limp / work / reset cycle for the locked
+servos; someone must hold the robot. Still to test on the robot: a face-down get-up that ends wide (hard to provoke
+on purpose), and whether the real hips object to a few seconds standing wide (the log's `enc` rows and the locked
+check before and after will say).
+
+Logs: robot_dump/robot_logs/robot_20261102_134849.jsonl (robot clock), robot_dump/sim2real_20261102_134849.jsonl,
+robot_dump/getup_stall_2026-11-02_gui_events.json.
+
+## Speed ramp, per-speed tables and the replay comparison (2 Nov 2026, afternoon)
+
+**Why speed 5 fell.** Every un-ramped walk started at speed 5 (9 that afternoon, battery 8.0-8.4 V) showed the same
+start: a dip forward in the first 0.3 s, then a backward lurch of 15-20 deg by 0.8 s; 4 of the 9 went over
+backwards within 1.5 s, 5 recovered. Walks at speeds 1 and 2 (7) showed no lurch at all (pitch within 3 deg). The
+spacing to the previous movement was the same for the falls and the survivors (1.6-5 s), so it is the start itself.
+
+**The ramp** (`Controller.RAMP_START/RAMP_STEP_S/RAMP_DOWN_S`): a robot walk asked above speed 2 begins at 2 and goes
+up by 1 every 0.5 s (the firmware takes speed changes in place: the gentle stop used that already); a release steps
+down to 2 before the app's stop. Three ramped starts at speed 5: no lurch (pitch within 3 deg in the first second),
+peak lean 9-13 deg at the speed steps, 0 falls. The simulator ramps the same way (`AppWalkSim(ramp=...)`).
+
+**Per-speed tables.** `tools/extract_appwalk.py` now keeps one table per speed: `forward` (speed 2, 19 walks),
+`forward@1` (8), `forward@5` (10, the un-ramped afternoon starts). The simulator plays the exact speed's table, else
+the nearest recorded, and switches tables in place at the same cycle phase when the speed changes (the ramp). Played
+in the simulator, the speed-5 table **falls** in its 5 s playback where the speed-2 table walks 51 cm: the
+simulator reproduces the lurch. But it also tips over when ramped (2 -> 5 in place, as the robot was driven), where
+the robot stayed up 3 of 3: the simulator's speed-5 cycle is less stable than the robot's, a gap for the next model
+fit (tests/test_appwalk.py records both outcomes).
+
+**Replay of the afternoon's walks** (`tools/sim2real_replay.py`, the robot's own frames, current model): the session
+with the un-ramped speed-5 falls agrees on 22 of 28 walks; of the robot's 5 falls the simulator reproduces 3 and
+misses 2, and it falls in 4 walks the robot survived (two of them turns). The ramped session: 2 of 4 (the simulator
+fell in one ramped walk the robot survived; one "walk" is the later stall). Joint damping x1.5 was the best lead
+for the next model fit on the morning's data; worth re-checking on these.
+
+Still open: backward-left never settled into a cycle (re-record); speeds 3 and 4 not recorded; the Wi-Fi stalls of
+the office channel interrupted two of the ramped walks (the robot's watchdog stopped them, as designed).
