@@ -1889,9 +1889,9 @@ class Controller:
 
     def set_balance(self, enable):
         """IMU balance (yanshee_sim.balance: ankle corrections from the torso's lean) on AppWalk. In the simulator: its
-        walks and turns. On the robot: its walk (the firmware gait's frames get the corrections on the robot itself,
-        no Wi-Fi in the loop), only through the robot link and only after tools/robot_checks.py balance found the ankle
-        and IMU signs as in the simulator. Its turns then go through the robot link's node, which plays TurnLeft/
+        walks and turns. On the robot: PARKED (ROBOT_BALANCE_ENV) after the fall of 2 Nov 2026; when allowed, its walk
+        (the firmware gait's frames get the corrections on the robot itself, no Wi-Fi in the loop), only through the
+        robot link and only after tools/robot_checks.py balance found the ankle and IMU signs as in the simulator. Its turns then go through the robot link's node, which plays TurnLeft/
         TurnRight itself with the balance (hal's own playback of the .hts cannot be corrected)."""
         self.balance = bool(enable)
         robot = self._apply_robot_balance()
@@ -1908,20 +1908,35 @@ class Controller:
         except (IndexError, OSError, ValueError):
             return False
 
+    # The balance on the ROBOT is parked (2 Nov 2026): on its first walk with it the robot fell on its back in 1.5 s.
+    # Its log shows why: the robot's servos take 76-124 ms to follow a frame and the IMU adds more, so the ankle
+    # correction arrived in phase with the walk's own 2.5 Hz pitch sway and amplified it (lean +5 forward at 0.2 s,
+    # the balance pushed back; +9, +14, +24, +36, 85 deg back from 0.5 s with the correction stuck at its +8 deg limit
+    # pushing forward). The simulator's servos have no such delay, which is why it never showed this. The simulator
+    # keeps its balance; the robot side needs the delay modelled and re-tuning before it is tried again.
+    ROBOT_BALANCE_ENV = "YANSHEE_ROBOT_BALANCE"
+
     def _apply_robot_balance(self):
         link = self._link
         if link is None or not link[1].alive:
             self._balance_robot = "off: no robot link" if self.balance else "off"
             return self._balance_robot
-        want = self.balance and self._balance_checked()
+        allowed = os.environ.get(self.ROBOT_BALANCE_ENV) == "1"
+        want = self.balance and allowed and self._balance_checked()
         try:
             link[1].set_balance(want)
         except (RuntimeError, OSError, ValueError) as e:
             self._balance_robot = f"off: {e}"
             return self._balance_robot
-        self._balance_robot = "on" if want else (
-            "off: run tools/robot_checks.py balance --ip IP first (are the ankle and IMU signs as in the simulator?)"
-            if self.balance else "off")
+        if want:
+            self._balance_robot = "on"
+        elif not self.balance:
+            self._balance_robot = "off"
+        elif not allowed:
+            self._balance_robot = ("off: parked on the robot (it amplified the walk's sway and fell, 2 Nov 2026; "
+                                   f"docs/SIM2REAL_FINDINGS.md); set {self.ROBOT_BALANCE_ENV}=1 to try it again")
+        else:
+            self._balance_robot = "off: run tools/robot_checks.py balance --ip IP first (are the ankle and IMU signs as in the simulator?)"
         return self._balance_robot
 
     def _robot_fall_loop(self, robot, stop):

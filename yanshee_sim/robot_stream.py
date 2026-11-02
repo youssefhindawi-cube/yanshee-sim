@@ -255,6 +255,8 @@ def on_log(m):
             path, st = m.msg.split("[", 1)[1].split("]", 1)[0], m.msg.split("status[", 1)[1].split("]", 1)[0]
             if "TurnLeft" in path or "TurnRight" in path:  # AppWalk's turns loop until stopped
                 WD["turn"] = path if st == "start" else None
+            elif "ResetSwitch" in path and st == "start":  # hal ends a looping turn with ResetSwitch, no "finish" for the turn (2 Nov 2026)
+                WD["turn"] = None
             out({"mo": path, "st": st, "t": t})
 rospy.Subscriber("/rosout_agg", Log, on_log, queue_size=200)
 def proxy(name, typ):

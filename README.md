@@ -179,9 +179,12 @@ Because that gait is open-loop, the same command sends the same servo frames eve
 simulator walks the robot's way by playing back frames recorded on the robot (`yanshee_sim/appwalk.py`,
 `model/appwalk.json` built by `python3 tools/extract_appwalk.py` from the robot logs): the start, the step cycle
 looped while the key is held, the firmware's stop (it finishes its step, winds down and stands up) and its
-TurnLeft/TurnRight/ResetSwitch motions. Recorded so far: forward and left; other directions are refused in Sim mode
-until the robot has walked them with the GUI connected (then rerun the tool). Every robot walk command is logged
-(`walk_cmd` rows) so the tool knows the speed and direction. **SwayStep**, our own gait (`sim_extras.SimGait`), is
+TurnLeft/TurnRight/ResetSwitch motions. Recorded (2 Nov 2026): forward, backward, left, right and three of the four
+diagonals, one walk each at speed 2 (forward five); a direction the table lacks is refused in Sim mode until the
+robot has walked it with the GUI connected (then rerun the tool). Every robot walk command is logged (`walk_cmd`
+rows) so the tool knows the speed and direction. Measured 2 Nov 2026: the robot walks 7.4 cm/s at speed 2 (45 cm
+in 6.1 s); the simulator's playback of the same frames goes 11 cm/s, so Sim mode distances are about 1.5x the
+robot's. **SwayStep**, our own gait (`sim_extras.SimGait`), is
 archived: on the robot (29 Oct 2026, streamed to `/hal_angles_set` over the robot link) it pitched back and forth more
 every step and fell backward in 2 of 4 runs, and the simulator no longer walks with it either (1 Nov 2026)
 (`docs/archive/SWAYSTEP_ON_ROBOT.md`; `YANSHEE_ALLOW_SWAY=1` re-enables it for experiments). With a robot connected (Robot or

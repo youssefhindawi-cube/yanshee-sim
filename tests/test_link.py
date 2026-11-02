@@ -101,6 +101,9 @@ def test_watchdog_stops_a_walk_and_a_turn_when_the_laptop_goes_quiet(python):
         _feed(feed, "turn start TurnLeft")
         time.sleep(1.0)
         assert [m for m, b in _gait_calls(srv)] == ["PUT", "DELETE", "PUT"]
+        _feed(feed, "turn start ResetSwitch")  # hal ends the turn with ResetSwitch and never reports the turn finished
+        time.sleep(3.5)
+        assert [m for m, b in _gait_calls(srv)] == ["PUT", "DELETE", "PUT"]  # no needless exit
     finally:
         p.kill()
         fake_robot.stop(srv)

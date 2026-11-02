@@ -178,18 +178,8 @@ Done on 29 Oct 2026 from the walking session's logs (`docs/SIM2REAL_FINDINGS.md`
 - **Latency** (`tools/latency_test.py`): baseline, power saving off and `--relay` done 2 Nov 2026 on the office
   Wi-Fi. Still: on the travel router with the laptop wired, and once, the robot standing and the GUI disconnected,
   `--move` (command -> arm servo). Compare: `--compare robot_dump/latency_test_*.json`.
-- **Get up ends in the reset pose** (1 Nov 2026, tested in the simulator and against the fake robot): after the
-  get-up motion (and Base_GetupF's reset) the Reset button's own move; a leg left splayed (hip roll more than 4 deg
-  out, not stall-locked) is stepped in: weight onto the other leg with both ankle rolls (10 deg), the free leg
-  lifted (hip pitch 14 deg), its hip roll back, put down, reset pose, every move slow (2.2x); it stops if the IMU
-  says it tipped. Check on a smooth hard floor, face down and on its back, a hand near the robot: it ends standing
-  straight (encoders within 3 deg of the reset pose); a stepping-in event if a leg was out.
-- **Robot watchdog and link reconnect** (1 Nov 2026, tested only against a fake ROS): with the GUI in Robot mode,
-  walk forward slowly on a clear floor, one person ready to catch it, and turn the laptop's Wi-Fi off: the robot
-  should stop by itself 1.5 s later (the app's stop, then its usual wind-down); the robot's log gets a `watchdog`
-  row. The same holding TurnLeft. Wi-Fi back on: the page shows "link lost, reconnecting", then the event "robot
-  link is back" within about 10 s. Also check the walk commands now go through the link (`relay` rows in the
-  robot's log) and the walk still starts and stops as before.
+- **Get up ends in the reset pose**: done 2 Nov 2026 on the robot, both ways (E8 above).
+- **Robot watchdog and link reconnect**: done 2 Nov 2026 (E6 above).
 
 Done on the robot on 2 Nov 2026 (office, smooth floor, `robot_dump/*_20261102_*.json`):
 
@@ -202,21 +192,42 @@ Done on the robot on 2 Nov 2026 (office, smooth floor, `robot_dump/*_20261102_*.
 - **Wi-Fi power saving off for good and the clock synced at boot**: `python3 tools/robot_setup.py --ip IP`
   installed a boot service and a dhcpcd hook on the Pi (`--status` shows them, `--remove` takes them out). The
   robot's log now records whether the clock was synced (`clock_synced` in the info row; the report prints it).
+- **E6, the robot's watchdog and the link reconnect**: the robot walking (speed 1), the laptop's packets dropped at
+  the robot's own firewall for 6 s: it stopped itself 1.59 s into the silence (the app's stop, wind-down, standing
+  still), the GUI dropped the link after 5 s of silence and had it back by about +12 s. The same holding TurnLeft:
+  ResetSwitch 1.74 s after the turn started, 24 deg turned, 7 deg lean. A needless "exit" 3 s later each time is
+  fixed (hal reports ResetSwitch, never the turn's finish).
+- **E8, Get up ends in the reset pose**: on its back (after the balance fall) 11 s, face down 18 s; both upright
+  with every encoder within 2 deg of the reset pose, no leg needed stepping in.
+- **D3, the walk directions the simulator was missing**: backward, right, left, and the four diagonals, one 5-6 s
+  walk each at speed 2, in cancelling pairs; `model/appwalk.json` rebuilt with 7 of the 8: the backward-left walk
+  never settled into a repeating cycle (its leg frames differ by a median 2 deg from one cycle to the next, the
+  others by 0.4 deg), so it is skipped until re-recorded. The side sign is confirmed by eye: speed_h < 0 steps to
+  the robot's right. More walks per direction, stopping at different moments, are still worth recording.
+- **D2, distance**: 45 cm in 6.1 s of walking at speed 2 (tape measure) = 7.4 cm/s; the simulator's playback of the
+  same frames goes 11 cm/s, so Sim mode distances are about 1.5x the robot's. Heading drifted +5 deg (left).
+- **Wi-Fi drop, seen live**: 2 minutes off the network right after the E6 tests, with power saving off. Not the
+  supply (no under-voltage flag), not a radio disconnect (no carrier loss in the kernel log): the channel. The data
+  rate fell 72 -> 14 Mbit/s over the session, 182 excessive retries, 12 % loss and 2 s stalls to the router from the
+  robot while the laptop had none. The robot's radio on channel 6 with strong networks on 5, 7 and 8 is the weak
+  link; the show router on channel 1 or 11 is the fix.
 
 Still open:
 
-- **Record the AppWalk directions the simulator is missing** (Sim mode refuses them until then): with the GUI in Both
-  mode, walk backward, right and the four diagonals for 5 s each, a few times, stopping at different moments; then
-  `python3 tools/extract_appwalk.py` (the GUI now logs every walk command with its speed and direction). Also walk at
-  the speed used for the show, and measure how far 5 s forward takes the robot (the simulator: 65 cm).
+- **More AppWalk recordings**: every direction has one walk since 2 Nov 2026 (forward 4); more walks per direction,
+  stopping at different moments, make the table's stops complete, and walks at the show's speed are still to record
+  (then `python3 tools/extract_appwalk.py`). The simulator falls replaying two of the diagonals the robot walked
+  (backward_right, forward_right) and walks 1.5x too fast: leads for the next model fit.
 - **Turning in place in the simulator**: settled for TurnLeft on 1 Nov 2026 (contact friction 0.8 -> 0.7: it no
   longer falls, leans up to 21 deg as the robot does, docs/SIM2REAL_FINDINGS.md "Turning and IMU balance"); still to
   compare the turn rate on more robot turns (5 recorded so far, 15-25 deg/s TurnLeft).
 - **Carry-over between walks in the replay**: each walk is replayed from rest, so a walk started while the robot was
   still swinging (walk 12) cannot match; replay a whole session continuously.
-- **IMU balance on the robot** (built 1 Nov 2026, `yanshee_sim/balance.py`, GUI "Balance"; tested only in the
-  simulator and against a fake ROS; the sign check `tools/robot_checks.py balance` passed on 2 Nov 2026, so the
-  robot's balance is enabled). Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
+- **IMU balance on the robot: PARKED** (2 Nov 2026: on its first balanced walk the robot fell on its back in 1.6 s,
+  the correction lagging the servos and amplifying the walk's sway; docs/SIM2REAL_FINDINGS.md "the balance fall").
+  Before another try: model the servo delay (76/124 ms) and the IMU's 53 ms in the simulator, re-tune there, then
+  test standing still with pushes before any walk; `YANSHEE_ROBOT_BALANCE=1` re-enables the robot side. The old
+  plan, when it is: Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
   push from behind with a finger): `tools/sim2real_report.py` tilt per walk, `bal` rows (the offsets) and `frame` rows
   with src `balance` in the robot's log; watch for hal warnings ("Read servo angle status timeout") with the extra
   frames. Turns with the balance on are played by the node (frames with src `turn`, `turn` rows): first hold

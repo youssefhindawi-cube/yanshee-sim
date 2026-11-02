@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -19,7 +20,7 @@ sys.path.insert(0, HERE)
 if not os.environ.get("DISPLAY"):
     os.environ.setdefault("MUJOCO_GL", "egl")
 import fake_robot  # noqa: E402
-from yanshee_sim import motion, sim_extras  # noqa: E402
+from yanshee_sim import appwalk, motion, sim_extras  # noqa: E402
 from yanshee_sim.controller import Controller, ModeError  # noqa: E402
 from yanshee_sim.robot import SimRobot  # noqa: E402
 from yanshee_sim.servos import RESET_POSE  # noqa: E402
@@ -273,12 +274,20 @@ def test_sim_gait_generator_upright():
             assert np.abs(moved).max() < 0.06, moved
 
 
-def test_controller_gait_update_and_stop():
+def without_direction(monkeypatch, name):
+    """The simulator's AppWalk table without one direction (every direction has been recorded since 2 Nov 2026)."""
+    table = appwalk.load()
+    trimmed = dict(table, walks={k: v for k, v in table["walks"].items() if k != name})
+    monkeypatch.setattr(appwalk, "load", lambda path=appwalk.TABLE: trimmed)
+
+
+def test_controller_gait_update_and_stop(monkeypatch):
+    without_direction(monkeypatch, "backward")
     c = ctl()
     r = c.gait(3, 0, steps=0)
     assert r["ok"] and not r["updated"]
     assert wait_until(lambda: "steps" in c.state()["activity"]["detail"], 5)
-    r = c.gait(-2, 0)  # the simulator walks the robot's recorded AppWalk: backward is not recorded yet
+    r = c.gait(-2, 0)  # the simulator walks the robot's recorded AppWalk: a direction not in the table is refused
     assert r["ok"] is False and "not been recorded walking backward" in r["error"]
     assert c.gait(0, 2)["updated"]
     assert c._activity.params["speed_h"] == 2
@@ -1068,7 +1077,8 @@ def test_walk_method_setting(monkeypatch):
     assert c.set_walk_method("app")["ok"] and c.walk_method == "app"
 
 
-def test_sim_walks_the_robots_appwalk():
+def test_sim_walks_the_robots_appwalk(monkeypatch):
+    without_direction(monkeypatch, "backward")
     """Sim mode walks the robot's recorded AppWalk: forward moves it forward without a fall; a direction the robot
     has not been recorded walking is refused, for the hold-to-walk gait and the built-in walk action."""
     c = ctl()
@@ -1099,6 +1109,16 @@ def test_balance_setting(tmp_path, monkeypatch):
     assert not c._balance_checked()
     (tmp_path / "balance_20261101_130000.json").write_text('{"ok": true}')
     assert c._balance_checked()
+    # the robot side is parked even with a passing check and a link, unless YANSHEE_ROBOT_BALANCE=1 (2 Nov 2026 fall)
+    sent = []
+    c._link = (object(), types.SimpleNamespace(alive=True, set_balance=lambda on: sent.append(on)))
+    try:
+        monkeypatch.delenv(c.ROBOT_BALANCE_ENV, raising=False)
+        assert c._apply_robot_balance().startswith("off: parked") and sent == [False]
+        monkeypatch.setenv(c.ROBOT_BALANCE_ENV, "1")
+        assert c._apply_robot_balance() == "on" and sent == [False, True]
+    finally:
+        c._link = None
     c.reset()
     assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
     assert c.gait(2, 0, steps=6)["ok"]  # the simulator walks with it

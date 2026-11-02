@@ -198,3 +198,58 @@ Robot on the office network (2.4 GHz channel 6, signal -50 dBm, 72 Mbit/s); lapt
   simulator falls at 6.4 s in the 12 s forward walk (3 of 4 agree); with joint damping x1.5, servo gain x1.25 or
   friction 0.6 all 4 agree (damping best: pitch RMS 4.6 deg). A lead for the next refit (damping x2 broke the
   get-up fit before). Its two turns: the simulator turned half as far (-32 / -41 deg against -63 / -96).
+
+## The robot's first walks through the link, and the balance fall (2 Nov 2026)
+
+Office floor (smooth), battery 60 %, GUI in Robot mode, every command through the robot link's relay (13 of 13 in
+the first walk: the walk, the stop, the gait-state polls; the REST server took 28-305 ms each on the robot).
+
+| walk | balance | frames, s | lean (pitch / roll) | result |
+|---|---|---|---|---|
+| 1, speed 2 | off | 143, 2.9 s | -12..+18 / -5..+7 deg | up |
+| 2, speed 2 | off | 274, 5.5 s | -5..+9 / -6..+9 deg | up |
+| 3, speed 2 | **on** | 384, 7.7 s | +85 back at 1.6 s | **fell on its back** |
+
+**Why the balance felled it.** The robot's own log, every 0.2 s: at 0.2-0.3 s the walk's first step leaned the
+torso 5 deg forward and the balance answered with -2.8 deg at the ankles (lean back); the walk's sway then swung
+back on its own, the correction added to it (+5.8, +9, +12 back by 0.7 s), the balance reversed to its +8 deg limit
+(lean forward) and stayed there, but the lean went +18, +24, +32, +39, +55, +85: over in 1.6 s. Nothing like it
+without the balance (walk 2 right before it: +9 at most). The cause is delay: the robot's servos start moving 76 ms
+after a frame and settle at 124 ms, the IMU report adds up to 53 ms, so at the walk's 2.5 Hz sway (a 400 ms cycle) the
+correction lands a third of a cycle late, in phase with the next swing instead of against it. The simulator's servos
+follow a frame at once and its IMU has no delay, so there the same gains halved the sway. No servo warnings from the
+100 frames a second (gait plus ankle frames).
+
+So: **the balance on the robot is parked** (`Controller.ROBOT_BALANCE_ENV`: `YANSHEE_ROBOT_BALANCE=1` to try it
+again); the GUI's Balance stays on for the simulator only and says so. Before another try: put the measured servo
+delay (first motion 76 ms, settled 124 ms) and the IMU's 53 ms into the simulator's servo model, re-tune there
+(expect: a much smaller gain, phase lead from the rate term, or a correction that only acts on the slow part of the
+lean, below 1 Hz), and first test on the robot standing still with pushes, not walking.
+
+**Get up on its back (E8)** right after: GetupRear, then the reset move; upright in 11 s, every encoder within 2 deg
+of the reset pose, nothing stepped in.
+
+## Walking tests of 2 Nov 2026 (office floor, GUI in Robot mode, every command through the link)
+
+| test | result |
+|---|---|
+| E6 watchdog, walking | laptop silenced 2 s into a speed-1 walk: the robot stopped itself 1.59 s later (the app's stop, then its wind-down and stand frames), stood still; link back by itself about 12 s later |
+| E6 watchdog, turning | holding TurnLeft: ResetSwitch 1.74 s after the turn began, +24 deg turned, 7 deg lean at most |
+| E8 get up, on its back | GetupRear + the reset move: 11 s, upright, every encoder within 2 deg of the reset pose |
+| E8 get up, face down | Base_GetupF + its reset + the reset move: 18 s, upright, within 2 deg, no leg stepped in |
+| D3 directions | backward, right, left, forward-left, backward-right, forward-right, backward-left: one 5-6 s walk each at speed 2, all upright; speed_h < 0 is the robot's right (watched). All but backward-left in the table: that walk never settled into a repeating cycle (re-record it) |
+| D2 distance | 45 cm in 6.10 s of 20 ms frames at speed 2 = 7.4 cm/s (tape measure); heading +5 deg over the walk |
+| E7 balance | parked after the fall (above) |
+
+**The simulator walks too fast.** Playing the same recorded frames, the simulator's forward walk covers 56 cm in
+5 s (11.2 cm/s) against the robot's 7.4 cm/s: the robot's feet slip and its servos lag more than the model's. Until
+the model is refitted, Sim mode distances are about 1.5x the robot's. Replaying today's diagonals the simulator
+also falls in backward_right and forward_right where the robot stayed up.
+
+**The Wi-Fi drop, seen live.** Two minutes off the network right after the E6 tests, power saving off. The Pi's
+under-voltage flag stayed clear and the kernel log shows no carrier loss, so neither the battery nor the radio
+reset; the association stayed up and packets stopped getting through. The robot's data rate fell 72 -> 14 Mbit/s
+over the session (182 excessive retries, rx errors 171k), and a 20 s ping from the robot to the router lost 12 %
+with 2.3 s stalls while the laptop's lost nothing. Channel 6 with strong networks on 5, 7 and 8, an antenna inside
+a moving body: the show router on channel 1 or 11, close to the stand, is the fix; the watchdog makes a drop
+mid-walk harmless meanwhile.
