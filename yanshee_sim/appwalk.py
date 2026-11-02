@@ -111,6 +111,7 @@ class AppWalkSim:
             if not any(offs.values()):
                 break
             self.sim.wait(self.FRAME_S)
+        self._clear_offsets()
         self.balance.reset(self.balance.ref)  # keep the standing reference
 
     @staticmethod
@@ -246,7 +247,12 @@ class AppWalkSim:
             if why in ("done", "stopped"):
                 break
         if self.balance is not None:
-            self.sim.set_offsets({})
+            self._clear_offsets()
             self.balance.reset()
         self.status = status
         return status
+
+    def _clear_offsets(self):
+        """No balance offsets at the servos: cleared, and the simulator's servo delay waited out."""
+        self.sim.set_offsets({})
+        self.sim.wait(getattr(self.sim, "servo_delay", 0.0) + 0.002)

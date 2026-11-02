@@ -253,3 +253,36 @@ over the session (182 excessive retries, rx errors 171k), and a 20 s ping from t
 with 2.3 s stalls while the laptop's lost nothing. Channel 6 with strong networks on 5, 7 and 8, an antenna inside
 a moving body: the show router on channel 1 or 11, close to the stand, is the fix; the watchdog makes a drop
 mid-walk harmless meanwhile.
+
+## The robot's delays in the simulator, and the balance retuned (2 Nov 2026, evening)
+
+**Delay model.** `SimRobot` now applies every servo command, balance offsets included, `SERVO_DELAY_S` (60 ms) after
+it is sent, and serves IMU samples `IMU_LATENCY_S` (20 ms, assumed) old on top of the 19 Hz hold. 60 ms reproduces
+the robot's step response measured through the link (a 15 deg move, 40 ms encoder reads: first motion median 76 ms,
+settled 124 ms). With it the simulator falls with the old balance gains in every scenario (walk, restart, push,
+turn) where it stayed up without them, as the robot did; with the balance off nothing changes but a slightly
+slower turn.
+
+**What the torso does.** The walk rocks the torso forward and back at about 1.2 Hz (robot logs, steady forward
+walks: pitch period 0.42-0.89 s, 8-15 deg peak to peak; the simulator the same). A correction that lands a quarter
+of that period late feeds the rocking. A low-pass on the lean error (tau 0.4 s) made things worse, falling even
+without delays: more lag. Rate-only damping fell too.
+
+**Retune** (`balance.Balance.GAINS`): a quarter of the old gains and half the authority: kp 0.15, kd 0.04 (pitch),
+kr 0.15, krd 0.015 (roll), deadband 4 deg, at most 4 deg of ankle. Peak torso tilt in the simulator with the delays,
+friction 0.7 (F = fell):
+
+| scenario | off | old gains | retuned |
+|---|---|---|---|
+| forward 4 s | 13.1 | F | 9.0 |
+| forward, restarted while swinging | 12.8 | F | 9.2 |
+| push from behind / front / side, 0.3 N s | F / F / 16.1 | F | 16.8 / 11.9 / 14.2 |
+| harder pushes (0.5 N s behind, 1.2 N s side) | F | F | F |
+| floor friction 0.5 / 1.0 | 13.0 / 11.1 | F | 10.1 / 8.7 |
+| left walk, left after a walk | 7.5, 12.1 | F | 8.9, 9.0 |
+| TurnLeft, TurnLeft after a walk | F, F | F | F, 17.7 |
+| TurnRight, TurnRight after a walk | 14.7, 15.7 | F | 13.9, 13.3 |
+
+Next on the robot, in this order: standing still with finger pushes (Balance on, no walking; the robot's log shows
+the offsets), then a 3 s forward walk with someone ready to catch it, then the rest of E7. The robot side stays
+parked (`YANSHEE_ROBOT_BALANCE=1`) until the standing test passes.

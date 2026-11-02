@@ -68,3 +68,43 @@ def test_balance_keeps_the_walk_and_clears_its_offsets():
     walk = appwalk.AppWalkSim(sim, balance=True)
     assert walk.run(dict(speed_v=2, speed_h=0, turn=0, steps=10, period=1, wave=True), threading.Event()) == "done"
     assert sim.data.body("base_link").xpos[1] - y0 > 0.1 and sim.torso_tilt_deg() < 15 and sim._offsets == {}
+
+
+def test_servo_delay_and_imu_latency_match_the_robot():
+    """The simulator's servos hear a command SERVO_DELAY_S late (the robot: first motion 76 ms, settled 124 ms for a
+    15 deg move) and its IMU samples are IMU_LATENCY_S old; both switch off with 0."""
+    import math
+    from yanshee_sim.robot import SimRobot
+    from yanshee_sim.servos import RESET_POSE
+    for delay, lo, hi in ((0.06, 0.05, 0.10), (0.0, 0.0, 0.03)):
+        sim = SimRobot(viewer=False, realtime=False)
+        sim.servo_delay = delay
+        sim.respawn()
+        sim.set_servos_angles(dict(RESET_POSE), 400)
+        sim.wait(1.0)
+        base = math.degrees(sim.data.qpos[sim._qadr["LeftShoulderFlex"]])
+        t0 = sim.data.time
+        sim._send({"LeftShoulderFlex": RESET_POSE["LeftShoulderFlex"] + 15}, 20)
+        first = None
+        while sim.data.time - t0 < 0.4:
+            sim.wait(0.005)
+            if first is None and abs(math.degrees(sim.data.qpos[sim._qadr["LeftShoulderFlex"]]) - base) >= 3:
+                first = sim.data.time - t0
+        assert first is not None and lo <= first <= hi, (delay, first)
+        assert abs(math.degrees(sim.data.qpos[sim._qadr["LeftShoulderFlex"]]) - base - 15) < 2.5
+        sim.close()
+    sim = SimRobot(viewer=False, realtime=False)
+    sim.imu_noise = False
+    sim.respawn()
+    sim.wait(0.3)
+    head = sim.model.body("NeckLR").id
+    with sim._lock:
+        sim.data.xfrc_applied[head] = [0, 6.0, 0, 0, 0, 0]  # a push: the torso starts leaning
+    sim.wait(0.25)
+    lean_now = sim.torso_lean()[0]
+    served = sim.get_sensors_gyro()["data"]["gyro"][0]["euler-x"] - 90.0
+    sim.imu_latency = 0.0
+    sim._imu_hold = None
+    served_now = sim.get_sensors_gyro()["data"]["gyro"][0]["euler-x"] - 90.0
+    assert abs(served_now - lean_now) < 0.5 and abs(served - lean_now) > abs(served_now - lean_now), (lean_now, served, served_now)
+    sim.close()

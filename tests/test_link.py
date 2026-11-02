@@ -174,9 +174,9 @@ def test_balance_on_the_firmware_walk(python):
         p.stdin.write("B 1 {}\n")
         p.stdin.flush()
         _feed(feed, "imu 92 0 0 0 0", n=5, every=0.05)  # standing upright: the reference
-        for _ in range(25):  # walking, leaning back 8 deg
+        for _ in range(25):  # walking, leaning back 20 deg (the gains are gentle: 4 deg deadband, kp 0.15)
             _feed(feed, "gait 1024", every=0.0)
-            _feed(feed, "imu 100 0 0 0 0", every=0.04)
+            _feed(feed, "imu 112 0 0 0 0", every=0.04)
         time.sleep(1.0)  # the walk is over: fade
         bal = [g["c"] for g in got if g.get("src") == "balance"]
         rf, lf, ru = NAMES.index("RightAnkleFB"), NAMES.index("LeftAnkleFB"), NAMES.index("RightKneeFlex")
@@ -218,7 +218,7 @@ def test_node_plays_a_balanced_turn(python):
         _say(p, "B 1 {}")
         _feed(feed, "imu 92 0 0 0 0", n=5, every=0.05)
         _say(p, "T TurnLeft")
-        _feed(feed, "imu 100 0 0 0 0", n=20, every=0.04)  # 0.8 s turning, leaning back 8 deg
+        _feed(feed, "imu 112 0 0 0 0", n=20, every=0.04)  # 0.8 s turning, leaning back 20 deg
         _say(p, "T 0")
         time.sleep(1.2)
         turn = [g["c"] for g in got if g.get("src") == "turn"]

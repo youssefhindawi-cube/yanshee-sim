@@ -8,6 +8,7 @@
 
 Angles are servo degrees (0-180) on both backends; method names and return shapes follow YanAPI.
 """
+import collections
 import math
 import numbers
 import os
@@ -174,10 +175,29 @@ class Robot:
 # Allan-variance fit. The course lesson on falls (euler-x about 0 face down, +-180 on the back) and UBTECH's
 # self-balancing sample (91.95 upright, a backward lean raises it) agree with the measurements.
 IMU_RATE_HZ = 19.0
+# Delays measured on the robot (2 Nov 2026, tools/latency_test.py --move, timed on the robot's own log): a servo
+# starts moving a median 76 ms after its frame and is settled at 124 ms (15 deg, a 20 ms command; the encoders were
+# read every 40 ms, so the start is some 20 ms earlier than the median says). The simulator's servos used to follow
+# a command at once; now every command, balance offsets included, reaches them SERVO_DELAY_S later, which is what
+# made the robot's balance fall (docs/SIM2REAL_FINDINGS.md "the balance fall"). The IMU sample is held for
+# 1/IMU_RATE_HZ as hal publishes it, and is IMU_LATENCY_S old when published (hal reads the chip, then publishes;
+# not measured: an assumption).
+SERVO_DELAY_S = 0.06
+IMU_LATENCY_S = 0.02
 IMU_UPRIGHT_EULER_X = 90.0
 IMU_ACCEL_SIGMA_G = 0.0164 * math.sqrt(IMU_RATE_HZ) / 9.80665
 IMU_GYRO_SIGMA_DEG_S = math.degrees(0.0014 * math.sqrt(IMU_RATE_HZ))
 IMU_GYRO_BIAS_DEG_S = (-0.85, -0.8, 0.5)  # measured at rest on our robot, chip axes
+
+
+def _move_value(move, t):
+    """Where a timed move (start rad, end rad, t0, t1) puts the servo at time t: a linear profile, held after t1."""
+    a, b, t0, t1 = move
+    if t >= t1:
+        return b
+    if t <= t0 or t1 <= t0:
+        return a
+    return a + (b - a) * (t - t0) / (t1 - t0)
 
 
 class SimRobot(Robot):
@@ -226,6 +246,9 @@ class SimRobot(Robot):
         # per actuator: (start rad, end rad, t_start, t_end)
         self._moves = {n: (self.data.ctrl[i], self.data.ctrl[i], 0.0, 0.0) for n, i in self._act.items()}
         self._offsets = {}  # servo -> rad added to its command on top of its move (set_offsets: balance)
+        self._offset_queue = collections.deque()  # (sim time it takes effect, offsets): SERVO_DELAY_S late like a frame
+        self._imu_hist = collections.deque()  # (t, R, gyro, accel) per step, the last IMU_LATENCY_S + a little
+        self.servo_delay, self.imu_latency = SERVO_DELAY_S, IMU_LATENCY_S  # per instance, for what-ifs and tests
         self._last_time = self.data.time
         self._lock = threading.RLock()
         self._imu_hold, self._imu_rng, self.imu_noise = None, None, True
@@ -250,12 +273,17 @@ class SimRobot(Robot):
         """Cancel all moves: every servo holds its current target (offsets included, then cleared)."""
         self._moves = {n: (self.data.ctrl[i], self.data.ctrl[i], 0.0, 0.0) for n, i in self._act.items()}
         self._offsets = {}
+        self._offset_queue.clear()
+        self._imu_hist.clear()
 
     def set_offsets(self, offsets):
         """{servo: deg} added to the servos' commands on top of their moves (balance corrections); {} for none."""
         rad = {n: math.radians(d) for n, d in offsets.items() if n in self._act and d}
         with self._lock:
-            self._offsets = rad
+            if self.servo_delay > 0:
+                self._offset_queue.append((self.data.time + self.servo_delay, rad))
+            else:
+                self._offsets = rad
 
     def _restart(self):
         """Back to the reset keyframe (standing, all servos working)."""
@@ -275,12 +303,18 @@ class SimRobot(Robot):
         if t < self._last_time:  # the viewer reset the data (Backspace): stale move times would replay old moves
             self._restart()
             t = self.data.time
+        while self._offset_queue and self._offset_queue[0][0] <= t:  # offsets reach the servos after the delay too
+            self._offsets = self._offset_queue.popleft()[1]
         off = self._offsets
-        for n, (a, b, t0, t1) in ({} if self.manual else self._moves).items():
-            s = 1.0 if t >= t1 else max(0.0, (t - t0) / (t1 - t0))
-            self.data.ctrl[self._act[n]] = a + (b - a) * s + off.get(n, 0.0)  # linear profile, like the servo's timed move
+        for n, mv in ({} if self.manual else self._moves).items():
+            self.data.ctrl[self._act[n]] = _move_value(mv, t) + off.get(n, 0.0)  # linear profile, like the servo's timed move
         self._mj.mj_step(self.model, self.data)
         self._last_time = self.data.time
+        if self.imu_latency > 0 and not self.fixed_base:
+            self._imu_hist.append((self.data.time, self.data.site("imu").xmat.copy(),
+                                   self.data.sensor("imu_gyro").data.copy(), self.data.sensor("imu_accel").data.copy()))
+            while self._imu_hist and self._imu_hist[0][0] < self.data.time - self.imu_latency - 0.1:
+                self._imu_hist.popleft()
         self.paint_leds()
 
     def _loop(self):
@@ -314,9 +348,9 @@ class SimRobot(Robot):
             if self.mirroring:  # a command of its own: the sim stops showing the robot and moves itself
                 self._end_mirror()
             self._cmd_t = t
+            t0 = t + self.servo_delay  # the servo hears of it this much later and starts from where it will be then
             for n, deg in angles.items():
-                cur = self.data.ctrl[self._act[n]] - self._offsets.get(n, 0.0)
-                self._moves[n] = (cur, math.radians(deg), t, t + runtime / 1000)
+                self._moves[n] = (_move_value(self._moves[n], t0), math.radians(deg), t0, t0 + runtime / 1000)
         return {"code": 0, "data": {n: True for n in angles}, "msg": "success"}
 
     def _read(self, names):
@@ -590,6 +624,11 @@ class SimRobot(Robot):
             else:
                 w = self.data.sensor("imu_gyro").data.copy()
                 f = self.data.sensor("imu_accel").data.copy()
+                if self.imu_latency > 0:  # the sample hal publishes is this old
+                    past = [h for h in self._imu_hist if h[0] <= t - self.imu_latency]
+                    if past:
+                        _, Rm, w, f = past[-1]
+                        R, w, f = Rm.reshape(3, 3).copy(), w.copy(), f.copy()
             mag = R.T @ self.model.opt.magnetic
         up = R.T @ np.array([0.0, 0.0, 1.0])  # world up on the site axes (x right, y forward, z up)
         up_c = np.array([up[0], up[2], -up[1]])  # on the chip axes (x right, y up, z back)

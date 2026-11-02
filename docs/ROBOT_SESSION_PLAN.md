@@ -225,9 +225,11 @@ Still open:
   still swinging (walk 12) cannot match; replay a whole session continuously.
 - **IMU balance on the robot: PARKED** (2 Nov 2026: on its first balanced walk the robot fell on its back in 1.6 s,
   the correction lagging the servos and amplifying the walk's sway; docs/SIM2REAL_FINDINGS.md "the balance fall").
-  Before another try: model the servo delay (76/124 ms) and the IMU's 53 ms in the simulator, re-tune there, then
-  test standing still with pushes before any walk; `YANSHEE_ROBOT_BALANCE=1` re-enables the robot side. The old
-  plan, when it is: Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
+  The delays are now in the simulator (robot.py SERVO_DELAY_S 60 ms, IMU_LATENCY_S 20 ms) and the gains retuned
+  on it (a quarter of the old, 4 deg at most; docs/SIM2REAL_FINDINGS.md "the balance retuned"). Next on the robot,
+  with `YANSHEE_ROBOT_BALANCE=1`: standing still with finger pushes first (Balance on, no walking; `bal` rows in the
+  robot's log show the offsets), then a 3 s forward walk with someone ready to catch it. The old plan after that:
+  Robot mode, Balance off and on, the same forward walks (5 s, a restart 1 s after a stop, a gentle
   push from behind with a finger): `tools/sim2real_report.py` tilt per walk, `bal` rows (the offsets) and `frame` rows
   with src `balance` in the robot's log; watch for hal warnings ("Read servo angle status timeout") with the extra
   frames. Turns with the balance on are played by the node (frames with src `turn`, `turn` rows): first hold

@@ -407,6 +407,8 @@ def test_gait_turn_and_viewer_keys():
     MuJoCo viewer window drive a leased walk, renew it on repeats and STOP on X/Esc."""
     c = ctl()
     assert c.gait(0, 0, steps=0, turn=9)["ok"] is False
+    c.sim.respawn()  # from standing: with the servo delay a turn from a walk's pose may tip
+    time.sleep(0.5)
     r = c.gait(0, 0, steps=0, turn=3)
     assert r["ok"] and wait_until(lambda: "anticlockwise" in c.state()["activity"]["detail"], 5)
     assert c.gait(0, 0, steps=0, turn=-2)["updated"] and c._activity.params["turn"] == -2
@@ -487,6 +489,8 @@ def test_tip_over_then_get_up():
     with a robot connected."""
     c = ctl()
     assert c.tip_over("sideways")["ok"] is False
+    c.sim.respawn()  # from standing, whatever the test before left
+    time.sleep(0.5)
     for direction in ("front", "back"):
         r = c.tip_over(direction)
         assert r["ok"] and r["direction"] == direction, r
@@ -1119,8 +1123,8 @@ def test_balance_setting(tmp_path, monkeypatch):
         assert c._apply_robot_balance() == "on" and sent == [False, True]
     finally:
         c._link = None
-    c.reset()
-    assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 8)
+    c.sim.respawn()  # from standing, whatever the tests before left (a get-up's pose made this walk marginal once)
+    time.sleep(0.5)
     assert c.gait(2, 0, steps=6)["ok"]  # the simulator walks with it
     assert wait_until(lambda: c.state()["activity"]["kind"] == "idle", 15)
     assert not c.state()["sim"]["fallen"] and c.sim._offsets == {}

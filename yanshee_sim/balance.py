@@ -33,8 +33,15 @@ class Balance(object):
     takes the standing lean as the reference."""
     PITCH = (("RightAnkleFB", 1.0), ("LeftAnkleFB", -1.0))  # + leans the torso forward
     ROLL = (("RightAnkleUD", 1.0), ("LeftAnkleUD", 1.0))  # + leans it left
-    GAINS = {"kp": 0.6, "kd": 0.06, "kr": 0.5, "krd": 0.03, "deadband": 2.0, "roll_deadband": 4.0, "limit": 8.0,
-             "rate_limit": 120.0}
+    # Gains retuned on 2 Nov 2026 with the robot's servo and IMU delays in the simulator (robot.SERVO_DELAY_S,
+    # IMU_LATENCY_S): a quarter of the first gains (kp 0.6, kd 0.06, limit 8), which felled the robot. The torso rocks
+    # at about 1.2 Hz while it walks (robot logs: pitch period 0.4-0.9 s, 8-15 deg peak to peak); with 60-80 ms of
+    # delay a stronger correction lands late enough to feed that rocking. These keep the simulator up in every
+    # scenario the old ones felled and lower its peak lean (walk 13 -> 9 deg, pushes survived); a low-pass on the
+    # error (tau) was tried and made it worse (more lag). Still to confirm on the robot, standing with pushes first.
+    GAINS = {"kp": 0.15, "kd": 0.04, "kr": 0.15, "krd": 0.015, "deadband": 4.0, "roll_deadband": 4.0, "limit": 4.0,
+             "rate_limit": 120.0, "tau": 0.0}
+    # tau > 0: the lean error is low-pass filtered with this time constant (s) before the gains (kept for experiments).
 
     def __init__(self, **gains):
         self.g = dict(self.GAINS)
@@ -43,14 +50,22 @@ class Balance(object):
 
     def reset(self, ref=None):
         self.ref, self.pitch, self.roll, self.t = ref, 0.0, 0.0, None
+        self.f_back = self.f_right = 0.0  # the filtered lean error (tau)
 
     def update(self, back, right, rate_back, rate_right, t):
         g = self.g
         if self.ref is None:
             self.ref = (back, right)
-        want_p = _clamp(g["kp"] * _dead(back - self.ref[0], g["deadband"]) + g["kd"] * rate_back, g["limit"])
-        want_r = _clamp(g["kr"] * _dead(right - self.ref[1], g["roll_deadband"]) + g["krd"] * rate_right, g["limit"])
-        step = g["rate_limit"] * (min(0.2, t - self.t) if self.t is not None else 0.05)
+        dt = min(0.2, t - self.t) if self.t is not None else 0.05
+        e_back, e_right = back - self.ref[0], right - self.ref[1]
+        if g["tau"] > 0:
+            a = dt / (g["tau"] + dt)
+            self.f_back += a * (e_back - self.f_back)
+            self.f_right += a * (e_right - self.f_right)
+            e_back, e_right = self.f_back, self.f_right
+        want_p = _clamp(g["kp"] * _dead(e_back, g["deadband"]) + g["kd"] * rate_back, g["limit"])
+        want_r = _clamp(g["kr"] * _dead(e_right, g["roll_deadband"]) + g["krd"] * rate_right, g["limit"])
+        step = g["rate_limit"] * dt
         self.pitch += _clamp(want_p - self.pitch, step)
         self.roll += _clamp(want_r - self.roll, step)
         self.t = t
