@@ -6,3 +6,5 @@ __pycache__/
 robot_dump/*/hts/
 # third-party downloads (no licences; tools/build_models.py does not read them)
 external/
+# editor settings
+.vscode/
