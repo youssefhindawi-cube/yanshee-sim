@@ -3,7 +3,7 @@
 Everything a new engineer needs to pick this repository up: what it is for, what to install, how to run it in
 simulation and on the real robot, where the knowledge lives, what is known to bite, and what is still open.
 Written 9 Nov 2026. The companion repository (speech, Arabic recognition, Q's brain) has its own
-`llm_model/HANDOVER.md`; the folder above both has a short `HANDOVER.md` index.
+`llm_model/HANDOVER.md`; `PROJECT_HANDOVER.md` here is the project-wide index (milestones, folders, rules).
 
 ---
 
