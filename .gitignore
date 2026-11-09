@@ -3,7 +3,8 @@ ros2_ws/install/
 ros2_ws/log/
 __pycache__/
 *.pyc
-robot_dump/*/hts/
+# measurements, robot logs, office photos and UBTECH source copied from the robot: never committed
+robot_dump/
 # third-party downloads (no licences; tools/build_models.py does not read them)
 external/
 # editor settings

@@ -800,7 +800,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 | `model/` | Generated MuJoCo model (`scene.xml` is the entry point) |
 | `ros2_ws/src/yanshee_description/` | ROS 2 package: URDF, meshes, launch, RViz config |
 | `motions/` | Motion files; `recorded/` for motions copied from the robot, `builtin/` the approximate sim versions of its parametric built-ins |
-| `robot_dump/` | Created by `tools/robot_checks.py`: measurement JSON files and the Pi's `.hts` motions (the latter git-ignored) |
+| `robot_dump/` | Created by the robot tools: measurement JSON files, robot logs, the Pi's `.hts` motions (git-ignored as a whole: it holds photos and UBTECH source) |
 | `source_model/robot.json` | Webots Yanshee model (Git LFS) from [Yanshee-Serenade/Yanshee-RL-Unity](https://github.com/Yanshee-Serenade/Yanshee-RL-Unity); that repository has no licence file, so ask its authors before redistributing |
 | `tests/` | Tests ([section 13](#13-tests)), `fake_robot.py` (fake Yanshee REST server) and `data/` (the motion list captured from a real robot) |
 | `knowledge/` | Yanshee knowledge base, course digest and online resources |
