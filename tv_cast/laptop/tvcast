@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""tvcast - one app to stream images (slideshow), videos, or a web page to a DLNA TV.
+
+Pure Python standard library only, so it runs on the laptop OR on the robot (no pip installs).
+
+Web UI:   tvcast serve [--port 8808] [--tv IP] [--dir FOLDER]
+          then open the printed URL; load a folder, press Play, use Prev/Next.
+CLI:      tvcast slides <folder> [--secs 5] [--loop] [--tv IP]
+          tvcast video  <file>            [--tv IP]
+          tvcast stop                     [--tv IP]
+
+Images are shown with NO video encoding (the TV displays each file directly), so it is instant.
+Videos are streamed as-is (no re-encoding). Only a web page -> scrolling video needs ffmpeg (laptop only);
+tvcast calls the separate `tv-scroll` for that, it is not required for images or videos.
+"""
+import sys, os, re, ssl, json, html, time, socket, argparse, threading, urllib.request, http.server
+
+DEFAULT_TV = "192.168.89.9"
+AVT = "urn:schemas-upnp-org:service:AVTransport:1"
+IMG_EXT = (".png",".jpg",".jpeg",".bmp",".webp",".gif")
+VID_EXT = (".mp4",".m4v",".mkv",".mov",".avi",".webm",".ts",".mpg")
+
+def local_ip_towards(host):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try: s.connect((host, 9197)); return s.getsockname()[0]
+    finally: s.close()
+
+def mime_for(path):
+    e = os.path.splitext(path)[1].lower()
+    return {".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".bmp":"image/bmp",
+            ".webp":"image/webp",".gif":"image/gif",".mp4":"video/mp4",".m4v":"video/mp4",
+            ".mkv":"video/x-matroska",".mov":"video/quicktime",".avi":"video/avi",
+            ".webm":"video/webm",".ts":"video/mpeg",".mpg":"video/mpeg"}.get(e,"application/octet-stream")
+
+def is_image(p): return p.lower().endswith(IMG_EXT)
+
+def numkey(p):
+    b = os.path.splitext(os.path.basename(p))[0]
+    m = re.match(r"^(-?\d+(?:\.\d+)?)", b)
+    return (0, float(m.group(1))) if m else (1, b.lower())
+
+class Caster:
+    """Holds the playlist and drives the TV. Thread-safe enough for this use."""
+    def __init__(self, tv_ip, serve_port):
+        self.tv = f"{tv_ip}:9197"; self.ctrl = "/upnp/control/AVTransport1"
+        self.ip = local_ip_towards(tv_ip); self.port = serve_port
+        self.root = None; self.items = []; self.idx = 0
+        self.secs = 5.0; self.loop = True; self.playing = False; self.mode = "idle"
+        self._wake = threading.Event(); self._lock = threading.Lock()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def set_tv(self, ip):
+        ip=(ip or "").strip()
+        if not ip: return
+        self.tv = f"{ip}:9197"
+        try: self.ip = local_ip_towards(ip)
+        except Exception: pass
+
+    def _soap(self, action, body):
+        env = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+               's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+               f'<s:Body><u:{action} xmlns:u="{AVT}">{body}</u:{action}></s:Body></s:Envelope>').encode()
+        req = urllib.request.Request(f"http://{self.tv}{self.ctrl}", data=env,
+              headers={"Content-Type":'text/xml; charset="utf-8"', "SOAPACTION":f'"{AVT}#{action}"'})
+        try: return urllib.request.urlopen(req, timeout=8).read().decode(errors="ignore")
+        except Exception as e: return f"<err>{e}</err>"
+
+    def _url(self, name): return f"http://{self.ip}:{self.port}/media/{urllib.request.quote(name)}"
+
+    def _push(self, name):
+        url = self._url(name); mime = mime_for(name)
+        cls = "object.item.imageItem" if mime.startswith("image/") else "object.item.videoItem"
+        feat = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+        meta = html.escape('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+            f'<item id="0" parentID="-1" restricted="1"><dc:title>{html.escape(name)}</dc:title>'
+            f'<upnp:class>{cls}</upnp:class>'
+            f'<res protocolInfo="http-get:*:{mime}:{feat}">{html.escape(url)}</res></item></DIDL-Lite>')
+        self._soap("SetAVTransportURI", f"<InstanceID>0</InstanceID><CurrentURI>{html.escape(url)}</CurrentURI>"
+                   f"<CurrentURIMetaData>{meta}</CurrentURIMetaData>")
+        self._soap("Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
+
+    def _worker(self):
+        while True:
+            if self.playing and self.items and self.mode == "slides":
+                with self._lock: name = self.items[self.idx]
+                self._push(name)
+                self._wake.wait(self.secs); self._wake.clear()
+                if not (self.playing and self.mode == "slides"): continue
+                with self._lock:
+                    if self.idx + 1 < len(self.items): self.idx += 1
+                    elif self.loop: self.idx = 0
+                    else: self.playing = False
+            else:
+                self._wake.wait(0.5); self._wake.clear()
+
+    # ---- control API ----
+    def open_dir(self, d):
+        d = os.path.expanduser(d)
+        if not os.path.isdir(d): return False, "not a folder"
+        imgs = sorted([f for f in os.listdir(d) if f.lower().endswith(IMG_EXT)], key=lambda f: numkey(f))
+        if not imgs: return False, "no images in folder"
+        with self._lock:
+            self.root = d; self.items = imgs; self.idx = 0; self.mode = "slides"; self.playing = False
+        return True, f"{len(imgs)} images"
+    def play(self):  self.playing = True; self._wake.set()
+    def pause(self): self.playing = False; self._wake.set()
+    def nxt(self):
+        with self._lock:
+            if self.items: self.idx = (self.idx + 1) % len(self.items)
+        self._push(self.items[self.idx]) if self.items else None; self._wake.set()
+    def prev(self):
+        with self._lock:
+            if self.items: self.idx = (self.idx - 1) % len(self.items)
+        self._push(self.items[self.idx]) if self.items else None; self._wake.set()
+    def goto(self, i):
+        with self._lock:
+            if self.items and 0 <= i < len(self.items): self.idx = i
+        self._push(self.items[self.idx]) if self.items else None; self._wake.set()
+    def video(self, path):
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path): return False, "no such file"
+        with self._lock:
+            self.root = os.path.dirname(path) or "."; self.items = [os.path.basename(path)]
+            self.idx = 0; self.mode = "video"; self.playing = False
+        self._push(self.items[0]); return True, "streaming video"
+    def stop(self):
+        self.playing = False; self.mode = "idle"; self._wake.set()
+        self._soap("Stop", "<InstanceID>0</InstanceID>")
+    def status(self):
+        with self._lock:
+            return {"mode":self.mode,"playing":self.playing,"idx":self.idx,"count":len(self.items),
+                    "secs":self.secs,"loop":self.loop,"tv":self.tv.split(":")[0],"root":self.root,
+                    "current":(self.items[self.idx] if self.items else None),"items":self.items}
+
+CASTER = None
+
+PAGE = """<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>tvcast</title><style>
+:root{--bg:#0e141b;--panel:#172230;--ink:#e6edf5;--mut:#8ea2b6;--acc:#4f8cff;--line:#243244;--ok:#3fb36b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px system-ui,sans-serif}
+header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.02em}
+.tag{font:12px ui-monospace,monospace;color:var(--mut)}
+.wrap{max-width:1100px;margin:0 auto;padding:16px 18px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0}
+input,button,select{font:14px system-ui;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:9px 12px}
+input[type=text]{min-width:320px;flex:1}
+button{cursor:pointer;background:var(--panel)}button:hover{border-color:var(--acc);color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}button.primary:hover{color:#fff;filter:brightness(1.08)}
+.status{font:13px ui-monospace,monospace;color:var(--mut);padding:8px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:12px}
+.cell{border:2px solid var(--line);border-radius:10px;overflow:hidden;cursor:pointer;background:#000;aspect-ratio:4/3;position:relative}
+.cell img{width:100%;height:100%;object-fit:cover;display:block}
+.cell.cur{border-color:var(--ok);box-shadow:0 0 0 2px var(--ok) inset}
+.cell .n{position:absolute;left:6px;top:6px;background:#000a;padding:1px 7px;border-radius:6px;font:12px ui-monospace;color:#fff}
+label{color:var(--mut);font-size:13px}
+.big{display:flex;gap:8px}.big button{padding:11px 16px;font-size:16px}
+</style></head><body>
+<header><h1>tvcast</h1><span class="tag" id="tvtag"></span><span class="tag" id="hosttag"></span></header>
+<div class="wrap">
+  <div class="row"><input type="text" id="dir" placeholder="/path/to/images folder on this machine"><button onclick="load()">Load folder</button>
+    <label>TV</label><input type="text" id="tv" style="min-width:150px;flex:none" placeholder="192.168.89.9"><button onclick="settv()">Set</button></div>
+  <div class="row big">
+    <button onclick="api('prev')">&#9664; Prev</button>
+    <button class="primary" id="playbtn" onclick="toggle()">&#9654; Play</button>
+    <button onclick="api('next')">Next &#9654;</button>
+    <button onclick="api('stop')">&#9632; Stop</button>
+    <label>Seconds/slide</label><input type="number" id="secs" value="5" min="1" step="1" style="width:80px;min-width:0" onchange="cfg()">
+    <label><input type="checkbox" id="loop" checked onchange="cfg()"> Loop</label>
+  </div>
+  <div class="status" id="status">No folder loaded.</div>
+  <div class="grid" id="grid"></div>
+</div>
+<script>
+let S={};
+async function j(u,b){const r=await fetch(u,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):null});return r.json()}
+async function refresh(){S=await j('/api/status');draw()}
+function draw(){
+  document.getElementById('tvtag').textContent='TV '+(S.tv||'?');
+  document.getElementById('hosttag').textContent=location.host;
+  document.getElementById('secs').value=S.secs;document.getElementById('loop').checked=S.loop;
+  let tvf=document.getElementById('tv');if(document.activeElement!==tvf)tvf.value=S.tv||'';
+  document.getElementById('playbtn').innerHTML=S.playing?'&#10073;&#10073; Pause':'&#9654; Play';
+  let st=S.count?`${S.mode} · ${S.count} items · showing #${S.idx+1} (${S.current||''}) · ${S.playing?'playing':'paused'}`:'No folder loaded.';
+  document.getElementById('status').textContent=st;
+  let g=document.getElementById('grid');g.innerHTML='';
+  if(S.mode==='slides'){(S.items||[]).forEach((f,i)=>{let d=document.createElement('div');d.className='cell'+(i===S.idx?' cur':'');
+    d.innerHTML=`<img loading=lazy src="/media/${encodeURIComponent(f)}"><span class="n">${i+1}</span>`;d.onclick=()=>j('/api/goto',{i});g.appendChild(d)})}
+}
+async function load(){let d=document.getElementById('dir').value.trim();let r=await j('/api/open',{dir:d});if(!r.ok)alert(r.msg);refresh()}
+async function settv(){await j('/api/tv',{tv:document.getElementById('tv').value.trim()});refresh()}
+async function toggle(){await j(S.playing?'/api/pause':'/api/play',{});refresh()}
+async function api(a){await j('/api/'+a,{});refresh()}
+async function cfg(){await j('/api/cfg',{secs:parseFloat(document.getElementById('secs').value),loop:document.getElementById('loop').checked});refresh()}
+refresh();setInterval(refresh,2500);
+</script></body></html>"""
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*a): pass
+    def _json(self,obj,code=200):
+        b=json.dumps(obj).encode();self.send_response(code)
+        self.send_header("Content-Type","application/json");self.send_header("Content-Length",str(len(b)))
+        self.end_headers();self.wfile.write(b)
+    def _body(self):
+        n=int(self.headers.get("Content-Length") or 0)
+        try: return json.loads(self.rfile.read(n) or b"{}")
+        except Exception: return {}
+    def do_GET(self):
+        if self.path=="/" or self.path.startswith("/?"):
+            b=PAGE.encode();self.send_response(200);self.send_header("Content-Type","text/html; charset=utf-8")
+            self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b);return
+        if self.path=="/api/status": return self._json(CASTER.status())
+        if self.path.startswith("/media/"):
+            name=urllib.request.unquote(self.path[len("/media/"):])
+            root=CASTER.root or "."; p=os.path.normpath(os.path.join(root,name))
+            if not p.startswith(os.path.normpath(root)) or not os.path.isfile(p):
+                self.send_response(404);self.end_headers();return
+            sz=os.path.getsize(p);rng=self.headers.get("Range");start,end=0,sz-1
+            if rng:
+                m=re.match(r"bytes=(\d+)-(\d*)",rng)
+                if m:start=int(m.group(1));end=int(m.group(2)) if m.group(2) else sz-1
+            self.send_response(206 if rng else 200)
+            self.send_header("Content-Type",mime_for(p))
+            self.send_header("contentFeatures.dlna.org", "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000")
+            self.send_header("transferMode.dlna.org", "Streaming")
+            self.send_header("Accept-Ranges","bytes")
+            if rng:self.send_header("Content-Range",f"bytes {start}-{end}/{sz}")
+            self.send_header("Content-Length",str(end-start+1));self.end_headers()
+            with open(p,"rb") as f:
+                f.seek(start);left=end-start+1
+                while left>0:
+                    chunk=f.read(min(262144,left))
+                    if not chunk:break
+                    try:self.wfile.write(chunk)
+                    except Exception:return
+                    left-=len(chunk)
+            return
+        self.send_response(404);self.end_headers()
+    def do_POST(self):
+        b=self._body()
+        if self.path=="/api/open": ok,msg=CASTER.open_dir(b.get("dir","")); return self._json({"ok":ok,"msg":msg})
+        if self.path=="/api/play": CASTER.play(); return self._json({"ok":True})
+        if self.path=="/api/pause": CASTER.pause(); return self._json({"ok":True})
+        if self.path=="/api/next": CASTER.nxt(); return self._json({"ok":True})
+        if self.path=="/api/prev": CASTER.prev(); return self._json({"ok":True})
+        if self.path=="/api/goto": CASTER.goto(int(b.get("i",0))); return self._json({"ok":True})
+        if self.path=="/api/stop": CASTER.stop(); return self._json({"ok":True})
+        if self.path=="/api/video": ok,msg=CASTER.video(b.get("path","")); return self._json({"ok":ok,"msg":msg})
+        if self.path=="/api/tv": CASTER.set_tv(b.get("tv",DEFAULT_TV)); return self._json({"ok":True})
+        if self.path=="/api/cfg":
+            if "secs" in b: CASTER.secs=max(1.0,float(b["secs"]))
+            if "loop" in b: CASTER.loop=bool(b["loop"])
+            return self._json({"ok":True})
+        self._json({"ok":False,"msg":"unknown"},404)
+
+def all_ips():
+    ips=set()
+    for host in ("8.8.8.8","192.168.89.9"):
+        try:
+            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.connect((host,80));ips.add(s.getsockname()[0]);s.close()
+        except Exception: pass
+    return sorted(ips)
+
+def main():
+    global CASTER
+    ap=argparse.ArgumentParser()
+    sub=ap.add_subparsers(dest="cmd")
+    s=sub.add_parser("serve"); s.add_argument("--port",type=int,default=8808); s.add_argument("--tv",default=DEFAULT_TV); s.add_argument("--dir",default=None)
+    sl=sub.add_parser("slides"); sl.add_argument("folder"); sl.add_argument("--secs",type=float,default=5); sl.add_argument("--loop",action="store_true"); sl.add_argument("--tv",default=DEFAULT_TV)
+    v=sub.add_parser("video"); v.add_argument("file"); v.add_argument("--tv",default=DEFAULT_TV)
+    st=sub.add_parser("stop"); st.add_argument("--tv",default=DEFAULT_TV)
+    a=ap.parse_args()
+    if not a.cmd: ap.print_help(); return
+
+    if a.cmd=="stop":
+        CASTER=Caster(a.tv,0); CASTER.stop(); print("Stopped TV playback."); return
+
+    port = a.port if a.cmd=="serve" else 8809
+    CASTER=Caster(a.tv,port)
+    httpd=http.server.ThreadingHTTPServer(("0.0.0.0",port),Handler)
+    threading.Thread(target=httpd.serve_forever,daemon=True).start()
+
+    if a.cmd=="serve":
+        if a.dir:
+            ok,msg=CASTER.open_dir(a.dir); print("folder:",msg)
+        print("tvcast control panel:")
+        for ip in all_ips(): print(f"   http://{ip}:{port}/")
+        print(f"   http://localhost:{port}/   (TV {a.tv})")
+        print("Open it from this laptop or any phone on the same Wi-Fi. Ctrl-C to quit.")
+        try:
+            while True: time.sleep(3600)
+        except KeyboardInterrupt: print("\nbye")
+    elif a.cmd=="slides":
+        ok,msg=CASTER.open_dir(a.folder)
+        if not ok: sys.exit(msg)
+        CASTER.secs=a.secs; CASTER.loop=a.loop; print(f"slides: {msg}, {a.secs}s each, loop={a.loop}. Ctrl-C to stop.")
+        CASTER.play()
+        try:
+            while True: time.sleep(3600)
+        except KeyboardInterrupt: CASTER.stop(); print("\nstopped")
+    elif a.cmd=="video":
+        ok,msg=CASTER.video(a.file)
+        if not ok: sys.exit(msg)
+        print(f"video: {msg}. Serving until Ctrl-C.")
+        try:
+            while True: time.sleep(3600)
+        except KeyboardInterrupt: CASTER.stop(); print("\nstopped")
+
+if __name__=="__main__":
+    main()

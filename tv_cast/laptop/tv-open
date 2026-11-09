@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""tv-open: open a URL in a Samsung Tizen TV's web browser via the remote-control API.
+
+Usage:
+  tv-open <url> [--tv IP] [--name NAME] [--wait SECONDS]
+  tv-open --pair [--tv IP]      # just establish/refresh the Allow token
+
+First run pops an "Allow / Deny" prompt ON THE TV; approve it within --wait seconds
+(default 60). The access token is saved to ~/.config/tv-open/<ip>.token and reused.
+"""
+import sys, os, ssl, json, base64, argparse, time
+import websocket  # websocket-client
+
+DEFAULT_TV = "192.168.89.9"
+CFGDIR = os.path.expanduser("~/.config/tv-open")
+
+def tokenfile(ip): return os.path.join(CFGDIR, f"{ip}.token")
+def load_token(ip):
+    try:
+        return open(tokenfile(ip)).read().strip() or None
+    except OSError:
+        return None
+def save_token(ip, tok):
+    os.makedirs(CFGDIR, exist_ok=True)
+    with open(tokenfile(ip), "w") as f: f.write(tok)
+
+def connect(ip, name, token, wait):
+    b64 = base64.b64encode(name.encode()).decode()
+    url = f"wss://{ip}:8002/api/v2/channels/samsung.remote.control?name={b64}"
+    if token: url += f"&token={token}"
+    sslopt = {"cert_reqs": ssl.CERT_NONE, "check_hostname": False}
+    ws = websocket.create_connection(url, sslopt=sslopt, timeout=wait)
+    # First frame is ms.channel.connect; on fresh pairing it carries the token
+    ws.settimeout(wait)
+    try:
+        msg = json.loads(ws.recv())
+    except Exception as e:
+        ws.close(); raise SystemExit(f"No response from TV (prompt not approved?): {e}")
+    ev = msg.get("event")
+    if ev == "ms.channel.unauthorized":
+        ws.close(); raise SystemExit("TV denied the connection (Deny pressed, or remote access is off).")
+    newtok = (msg.get("data") or {}).get("token")
+    if newtok:
+        save_token(ip, newtok); token = newtok
+    return ws, token
+
+def run_app(ws, app_id, action_type, meta):
+    ws.send(json.dumps({
+        "method": "ms.channel.emit",
+        "params": {"event": "ed.apps.launch", "to": "host",
+                   "data": {"appId": app_id, "action_type": action_type, "metaTag": meta}}
+    }))
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("url", nargs="?")
+    ap.add_argument("--tv", default=DEFAULT_TV)
+    ap.add_argument("--name", default="ClaudeRemote")
+    ap.add_argument("--wait", type=int, default=60)
+    ap.add_argument("--pair", action="store_true")
+    a = ap.parse_args()
+
+    token = load_token(a.tv)
+    if not token:
+        print(f"No saved token for {a.tv}. Approve the Allow prompt on the TV within {a.wait}s ...")
+    ws, token = connect(a.tv, a.name, token, a.wait)
+    print(f"Connected to {a.tv} (token {'reused' if token else 'none'}).")
+    if a.pair:
+        ws.close(); print("Paired. Token saved."); return
+    if not a.url:
+        ws.close(); ap.error("a URL is required (or use --pair)")
+    url = a.url if "://" in a.url else "https://" + a.url
+    run_app(ws, "org.tizen.browser", "NATIVE_LAUNCH", url)
+    time.sleep(1.5)
+    ws.close()
+    print(f"Sent browser-launch for {url}")
+
+if __name__ == "__main__":
+    main()

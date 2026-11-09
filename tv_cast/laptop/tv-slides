@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""tv-slides: build a crossfade slideshow video from images and play it on the TV (PowerPoint style).
+
+Usage:
+  tv-slides <dir | image1 image2 ...> [--secs D] [--trans T] [--tv IP] [--bg COLOR] [--out FILE] [--build-only]
+    --secs D    seconds each slide is held (default 5)
+    --trans T   crossfade seconds between slides (default 0.8)
+    --bg COLOR  letterbox background for non-16:9 images (default black)
+    --out FILE  where to write the mp4 (default ~/tv-slides.mp4)
+    --build-only  make the video but do not stream it
+Order: a directory is sorted by any leading number in the filename (-30,-15,0,15,30), else by name.
+"""
+import sys, os, re, subprocess, argparse, glob
+
+def collect(items):
+    exts = (".png",".jpg",".jpeg",".bmp",".webp",".gif")
+    files = []
+    for it in items:
+        if os.path.isdir(it):
+            files += [f for f in glob.glob(os.path.join(it,"*")) if f.lower().endswith(exts)]
+        elif os.path.isfile(it):
+            files.append(it)
+    def key(p):
+        b = os.path.basename(p); m = re.match(r"^(-?\d+(?:\.\d+)?)", os.path.splitext(b)[0])
+        return (0, float(m.group(1))) if m else (1, b.lower())
+    return sorted(files, key=key)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("items", nargs="+")
+    ap.add_argument("--secs", type=float, default=5)
+    ap.add_argument("--trans", type=float, default=0.8)
+    ap.add_argument("--tv", default=None)
+    ap.add_argument("--bg", default="black")
+    ap.add_argument("--out", default=os.path.expanduser("~/tv-slides.mp4"))
+    ap.add_argument("--build-only", action="store_true")
+    a = ap.parse_args()
+
+    imgs = collect(a.items)
+    if not imgs:
+        sys.exit("no images found")
+    print("Slides, in order:")
+    for i,f in enumerate(imgs,1): print(f"  {i}. {os.path.basename(f)}")
+
+    D, T, W, Hh = a.secs, a.trans, 1920, 1080
+    inputs = []
+    for f in imgs:
+        inputs += ["-loop","1","-t",f"{D:.3f}","-i",f]
+    # normalise each input to one size/fps/format
+    parts = []
+    for i in range(len(imgs)):
+        parts.append(
+            f"[{i}:v]scale={W}:{Hh}:force_original_aspect_ratio=decrease,"
+            f"pad={W}:{Hh}:(ow-iw)/2:(oh-ih)/2:color={a.bg},setsar=1,fps=30,format=yuv420p[v{i}]")
+    # xfade chain
+    if len(imgs) == 1:
+        last = "[v0]"
+    else:
+        last = "[v0]"
+        for i in range(1, len(imgs)):
+            off = i*(D - T)
+            out = f"[x{i}]" if i < len(imgs)-1 else "[vout]"
+            parts.append(f"{last}[v{i}]xfade=transition=fade:duration={T:.3f}:offset={off:.3f}{out}")
+            last = out
+    fc = ";".join(parts)
+    vmap = "[vout]" if len(imgs) > 1 else "[v0]"
+    cmd = ["ffmpeg","-y","-loglevel","error", *inputs,
+           "-filter_complex", fc, "-map", vmap,
+           "-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p",
+           "-movflags","+faststart", a.out]
+    total = len(imgs)*D - (len(imgs)-1)*T
+    print(f"Encoding {len(imgs)} slides -> {total:.1f}s video ...")
+    r = subprocess.run(cmd)
+    if r.returncode != 0 or not os.path.exists(a.out):
+        sys.exit("ffmpeg failed")
+    print(f"Video: {a.out} ({os.path.getsize(a.out)//1024} KB)")
+    if a.build_only:
+        return
+    push = [os.path.expanduser("~/.local/bin/dlna-push"), a.out]
+    if a.tv: push += ["--tv", a.tv]
+    print("Streaming to TV. Ctrl-C to stop.")
+    os.execv(push[0], push)
+
+if __name__ == "__main__":
+    main()

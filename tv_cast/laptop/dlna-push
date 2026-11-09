@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""dlna-push: stream a local video file to a DLNA MediaRenderer (e.g. a Samsung TV).
+
+Usage:
+  dlna-push <video-file> [--tv IP[:PORT]] [--control PATH] [--ip LOCALIP] [--port N]
+  dlna-push --stop  [--tv IP[:PORT]] [--control PATH]
+  dlna-push --find
+
+Defaults target the TV discovered on this network. It serves the file over HTTP
+from this machine and tells the TV to play that URL, then keeps serving until you
+press Ctrl-C (or the clip ends). Nothing is transcoded; the TV plays the file directly.
+"""
+import sys, os, socket, threading, argparse, urllib.request, http.server, functools, html, re
+
+DEFAULT_TV = "192.168.89.9:9197"
+DEFAULT_CONTROL = "/upnp/control/AVTransport1"
+AVT = "urn:schemas-upnp-org:service:AVTransport:1"
+
+def local_ip_towards(host):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((host, 9197)); return s.getsockname()[0]
+    finally:
+        s.close()
+
+def soap(tv, control, action, body):
+    url = f"http://{tv}{control}"
+    env = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        f'<s:Body><u:{action} xmlns:u="{AVT}">{body}</u:{action}></s:Body></s:Envelope>'
+    ).encode()
+    req = urllib.request.Request(url, data=env, headers={
+        "Content-Type": 'text/xml; charset="utf-8"',
+        "SOAPACTION": f'"{AVT}#{action}"',
+    })
+    with urllib.request.urlopen(req, timeout=8) as r:
+        return r.read().decode(errors="ignore")
+
+def dlna_content_features(path):
+    ext = os.path.splitext(path)[1].lower()
+    mime = {".mp4":"video/mp4",".m4v":"video/mp4",".mkv":"video/x-matroska",
+            ".mov":"video/quicktime",".avi":"video/avi",".webm":"video/webm",
+            ".ts":"video/mpeg",".mpg":"video/mpeg",
+            ".jpg":"image/jpeg",".jpeg":"image/jpeg",".png":"image/png",
+            ".gif":"image/gif",".bmp":"image/bmp"}.get(ext,"video/mp4")
+    pn = {"video/mp4":"AVC_MP4_BL_L3L_SD_AAC"}.get(mime,"")
+    feat = (f"DLNA.ORG_PN={pn};" if pn else "") + \
+        "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+    return mime, feat
+
+class OneFile(http.server.BaseHTTPRequestHandler):
+    path_on_disk = None; mime = None; feat = None
+    def log_message(self, *a): pass
+    def _hdr(self, extra=None):
+        self.send_header("Content-Type", self.mime)
+        self.send_header("contentFeatures.dlna.org", self.feat)
+        self.send_header("transferMode.dlna.org", "Streaming")
+        self.send_header("Accept-Ranges", "bytes")
+        if extra:
+            for k,v in extra.items(): self.send_header(k,v)
+    def do_HEAD(self):
+        sz = os.path.getsize(self.path_on_disk)
+        self.send_response(200); self._hdr({"Content-Length": str(sz)}); self.end_headers()
+    def do_GET(self):
+        sz = os.path.getsize(self.path_on_disk)
+        rng = self.headers.get("Range")
+        start, end = 0, sz-1
+        if rng:
+            m = re.match(r"bytes=(\d+)-(\d*)", rng)
+            if m:
+                start = int(m.group(1)); end = int(m.group(2)) if m.group(2) else sz-1
+        length = end - start + 1
+        self.send_response(206 if rng else 200)
+        if rng: self.send_header("Content-Range", f"bytes {start}-{end}/{sz}")
+        self._hdr({"Content-Length": str(length)}); self.end_headers()
+        with open(self.path_on_disk, "rb") as f:
+            f.seek(start); remaining = length
+            while remaining > 0:
+                chunk = f.read(min(256*1024, remaining))
+                if not chunk: break
+                try: self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError): return
+                remaining -= len(chunk)
+
+def serve(path, ip, port):
+    OneFile.path_on_disk = path
+    OneFile.mime, OneFile.feat = dlna_content_features(path)
+    httpd = http.server.ThreadingHTTPServer((ip, port), OneFile)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("file", nargs="?")
+    ap.add_argument("--tv", default=DEFAULT_TV)
+    ap.add_argument("--control", default=DEFAULT_CONTROL)
+    ap.add_argument("--ip", default=None)
+    ap.add_argument("--port", type=int, default=9000)
+    ap.add_argument("--stop", action="store_true")
+    ap.add_argument("--find", action="store_true")
+    a = ap.parse_args()
+
+    if a.find:
+        import subprocess
+        print("Browsing for DLNA renderers via SSDP is not built in; use avahi/ssdp.")
+        return
+
+    tvhost = a.tv.split(":")[0]
+    if a.stop:
+        soap(a.tv, a.control, "Stop", "<InstanceID>0</InstanceID>")
+        print("Sent Stop to", a.tv); return
+
+    if not a.file:
+        ap.error("a video file is required (or use --stop)")
+    path = os.path.abspath(a.file)
+    if not os.path.isfile(path):
+        ap.error(f"no such file: {path}")
+
+    ip = a.ip or local_ip_towards(tvhost)
+    httpd = serve(path, ip, a.port)
+    media_url = f"http://{ip}:{a.port}/{urllib.request.quote(os.path.basename(path))}"
+    _, feat = dlna_content_features(path)
+    title = html.escape(os.path.basename(path))
+    meta = html.escape(
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        f'<item id="0" parentID="-1" restricted="1"><dc:title>{title}</dc:title>'
+        f'<upnp:class>object.item.{"imageItem" if dlna_content_features(path)[0].startswith("image/") else "videoItem"}</upnp:class>'
+        f'<res protocolInfo="http-get:*:{dlna_content_features(path)[0]}:{feat}">{html.escape(media_url)}</res>'
+        '</item></DIDL-Lite>')
+
+    print(f"Serving {path}\n  as {media_url}\n  to TV {a.tv}")
+    soap(a.tv, a.control, "SetAVTransportURI",
+         f"<InstanceID>0</InstanceID><CurrentURI>{html.escape(media_url)}</CurrentURI>"
+         f"<CurrentURIMetaData>{meta}</CurrentURIMetaData>")
+    try:
+        soap(a.tv, a.control, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
+    except Exception as e:
+        # Photos display on SetAVTransportURI; many renderers answer Play with an error. Harmless.
+        if dlna_content_features(path)[0].startswith("image/"):
+            pass
+        else:
+            print("Warning: Play returned an error:", e)
+    print("Now showing on the TV. Press Ctrl-C to stop serving.")
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        try: soap(a.tv, a.control, "Stop", "<InstanceID>0</InstanceID>")
+        except Exception: pass
+        print("\nStopped.")
+
+if __name__ == "__main__":
+    main()

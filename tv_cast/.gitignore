@@ -1,0 +1,4 @@
+# generated artifacts (rebuild with build/build-slideshow.sh)
+*.mp4
+*.log
+tv-web-shot.png

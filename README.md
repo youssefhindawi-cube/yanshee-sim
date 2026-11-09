@@ -38,11 +38,12 @@ The design of the relay controller, REST client, web server and page is in
 9. [Servo reference](#9-servo-reference)
 10. [From simulation to the real robot](#10-from-simulation-to-the-real-robot)
 11. [ROS 2](#11-ros-2)
-12. [Rebuilding the model](#12-rebuilding-the-model)
-13. [Tests](#13-tests)
-14. [Accuracy, limits and what the documents say](#14-accuracy-limits-and-what-the-documents-say)
-15. [Troubleshooting](#15-troubleshooting)
-16. [Repository layout](#16-repository-layout)
+12. [Cast a slideshow to a TV](#12-cast-a-slideshow-to-a-tv)
+13. [Rebuilding the model](#13-rebuilding-the-model)
+14. [Tests](#14-tests)
+15. [Accuracy, limits and what the documents say](#15-accuracy-limits-and-what-the-documents-say)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Repository layout](#17-repository-layout)
 
 ---
 
@@ -281,7 +282,7 @@ YANSHEE_SIM_HEADLESS=1 python3 scripts/run_in_sim.py script.py         # no wind
 | `start_play_motion`, `sync_play_motion`, `stop_play_motion` | `reset` / `Stop` work. Other names play the first file found: `NAME_DIRECTION`, then `NAME`, in `motions/recorded/`, `motions/builtin/` (approximate sim versions of `wave`, `raise`, `bow`, …), then `motions/` (JSON or `.hts`). |
 | `get_motion_list_value` | The available motion files |
 | `get_robot_battery_value`, `get_robot_battery_info` | 100 % |
-| `get_sensors_gyro` | The emulated IMU, in the robot's frame and units ([section 14](#14-accuracy-limits-and-what-the-documents-say)) |
+| `get_sensors_gyro` | The emulated IMU, in the robot's frame and units ([section 15](#15-accuracy-limits-and-what-the-documents-say)) |
 | `sync_do_tts`, `start_voice_tts`, `set_robot_led`, `set_robot_volume`, `start_play_music`, `stop_play_music` | Printed to the terminal |
 | Everything else (vision, speech recognition, other sensors) | Not simulated: a failure value of the call's type, with one warning (`-1` for `*_value` calls, `""`/`False`/`[]`/`None` where YanAPI returns those, else `{"code": -1, "msg": "not simulated"}`) |
 
@@ -392,13 +393,13 @@ python3 -m yanshee_sim.hts FILE.hts                # print the frames (move/hold
 python3 -m yanshee_sim.hts motion.json out.hts     # convert either way, by extension
 ```
 
-### `tools/build_models.py` — regenerate the models (see [section 12](#12-rebuilding-the-model))
+### `tools/build_models.py` — regenerate the models (see [section 13](#13-rebuilding-the-model))
 
 ```bash
 python3 tools/build_models.py && python3 tests/test_models.py
 ```
 
-### Tests (see [section 13](#13-tests))
+### Tests (see [section 14](#14-tests))
 
 ```bash
 python3 -m pytest -q tests          # all of them
@@ -419,7 +420,7 @@ python3 scripts/mirror.py from-robot --ip 192.168.3.13 --limp-arms
 - Play a built-in from the app, or with `--limp-arms` move the arms and head by hand (those 7 servos go into YanAPI's
   limp `program` mode and back to `work` on exit).
 - **Check that every joint turns the same way in both.** This is how you confirm the model matches your robot before
-  sending it commands. The ankle pitch is the one to watch ([section 14](#14-accuracy-limits-and-what-the-documents-say)).
+  sending it commands. The ankle pitch is the one to watch ([section 15](#15-accuracy-limits-and-what-the-documents-say)).
 
 ### Simulator → robot
 
@@ -687,7 +688,59 @@ ros2 launch yanshee_description display.launch.py rviz:=false
 
 ---
 
-## 12. Rebuilding the model
+## 12. Cast a slideshow to a TV
+
+The robot can play a slideshow or a video on a DLNA TV on the same network, with the robot as the source
+(the laptop is not involved once it is set up). This is the reliable path we use for exhibitions. Full tool
+reference and findings are in [tv_cast/README.md](tv_cast/README.md).
+
+**What works, in short.** Pushing a **video** (or an image) to the TV over DLNA is reliable. Screen mirroring
+(Miracast) is **not** possible from the test laptop: its Wi-Fi and the TV share no 5 GHz Wi-Fi Direct channel.
+The TV's built-in browser cannot be launched remotely on the 2024 model, and its photo viewer can get stuck,
+so for anything that must be dependable we send a **video** rather than still images.
+
+### Connect to the TV
+
+- Put the **robot and the TV on the same network** (both were on `192.168.89.x`). The TV must be a DLNA
+  renderer (any Samsung Smart TV is). Note its IP; the control port is `9197`.
+- Find TVs on the network from the laptop without connecting: `avahi-browse -a -r -t` (look for the Samsung
+  entry), or an SSDP search. The test TV is `192.168.89.9`.
+- No pairing is needed for DLNA. (The separate `tv_cast/laptop/tv-open` tool does pair with the Samsung remote
+  API, but browser launch is blocked on this model, so it is not used for the slideshow.)
+
+### One-time setup
+
+1. Build the slideshow **video** on the laptop (needs `ffmpeg`); images order by any leading number in the
+   filename (`-30, -15, 0, 15, 30`):
+
+       tv_cast/build/build-slideshow.sh /path/to/images 5     # 5 seconds per slide -> ~/robot-slideshow.mp4
+
+2. Give the laptop key-based SSH to the robot, then deploy the caster and the video and install the service:
+
+       ssh-copy-id pi@192.168.89.80
+       tv_cast/deploy/robot-deploy.sh pi@192.168.89.80 192.168.89.9
+
+   This copies `rcast.py` and `robot-slideshow.mp4` to the robot and installs `rcast-slideshow.service`
+   (stopped, manual start, not enabled on boot). `rcast.py` is Python-3.5-compatible and standard-library
+   only, so **the robot's Python is not changed and nothing is installed on it**.
+
+### Trigger the cast
+
+On the robot (`ssh pi@192.168.89.80`):
+
+```
+sudo systemctl start rcast-slideshow     # play the slideshow once, then it stops on its own
+sudo systemctl stop  rcast-slideshow     # stop early
+systemctl is-active  rcast-slideshow     # check
+```
+
+The slideshow **plays once** per start. To start it automatically at power-on, `sudo systemctl enable
+rcast-slideshow`; to loop instead of play once, add `--loop` to `ExecStart` in the unit. If the TV shows
+nothing, change its source or press Home first (clears a stuck photo app), then start the service again.
+
+---
+
+## 13. Rebuilding the model
 
 `tools/build_models.py` reads `source_model/robot.json` (Git LFS) and writes `model/yanshee.xml`, `model/scene.xml`, `model/scene_mat.xml`,
 `model/meshes/*.stl` (MuJoCo) and `ros2_ws/src/yanshee_description/urdf/yanshee.urdf` + `meshes/` (ROS 2). The
@@ -706,7 +759,7 @@ Then `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit
 
 ---
 
-## 13. Tests
+## 14. Tests
 
 | Test | Checks |
 |---|---|
@@ -729,7 +782,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 
 ---
 
-## 14. Accuracy, limits and what the documents say
+## 15. Accuracy, limits and what the documents say
 
 **High fidelity**
 - **Kinematics:** joint axes, link lengths, meshes and head camera pose come from UBTECH's CAD-derived Webots model; URDF and MuJoCo agree to 1 µm. The course's "straight leg" servo values (knee 128 right / 52 left) match the model's geometry within its own left-right asymmetry (132 / 52).
@@ -767,7 +820,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 | Problem | Fix |
 |---|---|
@@ -789,7 +842,7 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 
 ---
 
-## 16. Repository layout
+## 17. Repository layout
 
 | Path | Contents |
 |---|---|
@@ -802,7 +855,8 @@ work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 | `motions/` | Motion files; `recorded/` for motions copied from the robot, `builtin/` the approximate sim versions of its parametric built-ins |
 | `robot_dump/` | Created by the robot tools: measurement JSON files, robot logs, the Pi's `.hts` motions (git-ignored as a whole: it holds photos and UBTECH source) |
 | `source_model/robot.json` | Webots Yanshee model (Git LFS) from [Yanshee-Serenade/Yanshee-RL-Unity](https://github.com/Yanshee-Serenade/Yanshee-RL-Unity); that repository has no licence file, so ask its authors before redistributing |
-| `tests/` | Tests ([section 13](#13-tests)), `fake_robot.py` (fake Yanshee REST server) and `data/` (the motion list captured from a real robot) |
+| `tests/` | Tests ([section 14](#14-tests)), `fake_robot.py` (fake Yanshee REST server) and `data/` (the motion list captured from a real robot) |
+| `tv_cast/` | Cast images/video/web pages to a DLNA TV, and the robot's slideshow caster ([section 12](#12-cast-a-slideshow-to-a-tv)): `robot/` (Python-3.5 `rcast.py` + systemd unit), `laptop/` (helper tools), `deploy/`, `build/` |
 | `knowledge/` | Yanshee knowledge base, course digest and online resources |
 | `docs/` | `ARCHITECTURE.md` (design of the controller, REST client, server and page), `ROBOT_SESSION_PLAN.md` (the first session with the robot), images |
 | `GIT_GUIDE.md` | How to commit and push to this repo (multi-account setup) |

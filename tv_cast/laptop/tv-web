@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# tv-web: render a webpage to an image on this laptop and show it on the TV via DLNA.
+# Usage: tv-web <url> [--tv IP] [--size WxH] [--full] [--refresh SECONDS]
+#   --full      capture the full page height, not just one screen
+#   --refresh N re-render every N seconds (for pages that change); Ctrl-C to stop
+set -euo pipefail
+URL=""; TV=""; SIZE="1920,1080"; FULL=""; REFRESH=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tv) TV="--tv $2"; shift 2;;
+    --size) SIZE="${2/x/,}"; shift 2;;
+    --full) FULL="--full-page"; shift;;
+    --refresh) REFRESH="$2"; shift 2;;
+    -*) echo "unknown option $1" >&2; exit 2;;
+    *) URL="$1"; shift;;
+  esac
+done
+[ -n "$URL" ] || { echo "usage: tv-web <url> [--tv IP] [--size WxH] [--full] [--refresh N]" >&2; exit 2; }
+case "$URL" in *://*) ;; *) URL="https://$URL";; esac
+SHOT="$HOME/tv-web-shot.png"   # non-hidden: snap firefox cannot write dotfiles
+render() {
+  rm -f "$SHOT"
+  if [ -n "$FULL" ]; then
+    timeout 90 firefox --headless --no-remote --screenshot "$SHOT" "$URL" >/dev/null 2>&1 || true
+  else
+    timeout 90 firefox --headless --no-remote --screenshot "$SHOT" --window-size=$SIZE "$URL" >/dev/null 2>&1 || true
+  fi
+  [ -s "$SHOT" ] || { echo "render failed for $URL" >&2; return 1; }
+}
+echo "Rendering $URL ..."
+render
+if [ -n "$REFRESH" ]; then
+  echo "Showing on TV, re-rendering every ${REFRESH}s. Ctrl-C to stop."
+  # push once (background server), then re-render + re-push on each tick
+  while true; do
+    ~/.local/bin/dlna-push "$SHOT" $TV >/dev/null 2>&1 &
+    PUSH=$!; sleep "$REFRESH"
+    kill $PUSH 2>/dev/null || true
+    render || true
+  done
+else
+  echo "Showing on TV. Ctrl-C to stop."
+  exec ~/.local/bin/dlna-push "$SHOT" $TV
+fi

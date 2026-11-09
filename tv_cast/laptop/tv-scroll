@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# tv-scroll: turn a long webpage/artifact into a slow auto-scroll VIDEO and play it on the TV.
+# Usage: tv-scroll <url-or-file.html> [--tv IP] [--secs N] [--pxrate N] [--keep]
+#   --secs N    total scroll duration (default: auto from page height, ~200 px/s)
+#   --pxrate N  scroll speed in px/sec (ignored if --secs given; default 200)
+#   --keep      keep the generated mp4 (~/tv-scroll.mp4) instead of only streaming
+set -euo pipefail
+SRC=""; TV=""; SECS=""; PXRATE=200; KEEP=""
+while [ $# -gt 0 ]; do case "$1" in
+  --tv) TV="--tv $2"; shift 2;;
+  --secs) SECS="$2"; shift 2;;
+  --pxrate) PXRATE="$2"; shift 2;;
+  --keep) KEEP=1; shift;;
+  -*) echo "unknown option $1" >&2; exit 2;;
+  *) SRC="$1"; shift;; esac; done
+[ -n "$SRC" ] || { echo "usage: tv-scroll <url-or-file.html> [--tv IP] [--secs N] [--pxrate N]" >&2; exit 2; }
+case "$SRC" in *://*) URL="$SRC";; /*) URL="file://$SRC";; *) [ -f "$SRC" ] && URL="file://$(readlink -f "$SRC")" || URL="https://$SRC";; esac
+
+FULL="$HOME/tv-scroll-full.png"; MP4="$HOME/tv-scroll.mp4"
+echo "Rendering full page: $URL"
+rm -f "$FULL"
+timeout 120 firefox --headless --no-remote --window-size=1920,30000 --screenshot "$FULL" "$URL" >/dev/null 2>&1 || true
+[ -s "$FULL" ] || { echo "render failed" >&2; exit 1; }
+
+# trim blank bottom to the true content height, pad to even dims
+read W H < <(python3 - "$FULL" <<'PY'
+import sys; from PIL import Image; import numpy as np
+im=Image.open(sys.argv[1]).convert("RGB"); a=np.asarray(im); bg=a[0,0].astype(int)
+rows=(np.abs(a.astype(int)-bg).sum(2)>24).sum(1); nz=np.where(rows>3)[0]
+h=min(int(nz[-1])+24, a.shape[0]) if len(nz) else a.shape[0]
+h-=h%2
+im.crop((0,0,a.shape[1],h)).save(sys.argv[1])
+print(a.shape[1], h)
+PY
+)
+echo "Page is ${W}x${H}px."
+if [ -z "$SECS" ]; then SECS=$(( (H>1080 ? H-1080 : 0) / PXRATE + 4 )); fi
+[ "$SECS" -lt 6 ] && SECS=6
+echo "Encoding a ${SECS}s scroll video ..."
+if [ "$H" -le 1080 ]; then
+  # short page: just show it as a still-frame video
+  ffmpeg -y -loglevel error -loop 1 -framerate 30 -t "$SECS" -i "$FULL" \
+    -vf "scale=1920:-2,pad=1920:1080:0:(1080-ih)/2:white,format=yuv420p" \
+    -c:v libx264 -preset veryfast -pix_fmt yuv420p -movflags +faststart "$MP4"
+else
+  ffmpeg -y -loglevel error -loop 1 -framerate 30 -t "$SECS" -i "$FULL" \
+    -vf "crop=1920:1080:0:'max(0\,min(ih-1080\,(ih-1080)*t/${SECS}))',format=yuv420p" \
+    -c:v libx264 -preset veryfast -pix_fmt yuv420p -movflags +faststart "$MP4"
+fi
+echo "Video: $(du -h "$MP4" | cut -f1)  -> streaming to TV. Ctrl-C to stop."
+trap '[ -n "$KEEP" ] || rm -f "$FULL"' EXIT
+exec ~/.local/bin/dlna-push "$MP4" $TV

@@ -1,0 +1,14 @@
+[Unit]
+Description=Robot casts a slideshow to the TV over DLNA (plays once)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+# Plays the slideshow ONCE, then exits. Remove nothing to loop; add --loop to repeat.
+ExecStart=/usr/bin/python3 /home/pi/rcast.py /home/pi/robot-slideshow.mp4 --tv 192.168.89.9
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
