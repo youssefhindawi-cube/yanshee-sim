@@ -172,9 +172,13 @@ Done on 29 Oct 2026 from the walking session's logs (`docs/SIM2REAL_FINDINGS.md`
   (docs/SIM2REAL_FINDINGS.md "Link and Wi-Fi measured on the robot"): power saving on at boot, stalls on the robot's
   leg, channel 6 crowded. Power saving is off across reboots since 2 Nov (`tools/robot_setup.py`). Still to do: the
   travel router on channel 1 or 11 with the laptop wired, and repeat `tools/latency_test.py --seconds 300`.
-- **Walk commands without the REST server** (56-77 ms per call on the robot): with the robot walking from the app or
-  the GUI, record `/motion_planning_speed` and `/teleopkey` (`rostopic echo`) to see what the REST server sends the
-  gait; then the node could publish it directly.
+- **Walk commands without the REST server**: recorded 9 Nov 2026 (`tools/record_gait_topics.py --walk 2`,
+  `robot_dump/robot_logs/gait_topics_20261109_135626.jsonl`; docs/SIM2REAL_FINDINGS.md "What the REST server sends
+  the gait"). The gait node is driven by a *service*, not a topic: REST -> `/MoveAction/goal` -> the `/move` state
+  machine -> `/operation_cmd` (the same JSON string) -> gait_node. REST server about 100 ms, state machine 100-150 ms
+  (650 ms more on the first walk: hal reset, a fixed 0.5 s wait, the crouch), gait node under 20 ms. The link node
+  could call `/operation_cmd` itself (saves 100-150 ms per command); parked until the first-walk fall of that session
+  is understood (the robot fell on its back 1.4 s into a plain speed-2 walk, battery 68 %).
 - **Latency** (`tools/latency_test.py`): baseline, power saving off and `--relay` done 2 Nov 2026 on the office
   Wi-Fi. Still: on the travel router with the laptop wired, and once, the robot standing and the GUI disconnected,
   `--move` (command -> arm servo). Compare: `--compare robot_dump/latency_test_*.json`.

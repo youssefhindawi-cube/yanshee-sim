@@ -33,3 +33,36 @@ def test_help():
     out = subprocess.run([sys.executable, os.path.join(os.path.dirname(HERE), "tools", "find_robot.py"), "--help"],
                          capture_output=True, text=True, timeout=30)
     assert out.returncode == 0 and "--wait" in out.stdout and "--vnc" in out.stdout and fr.ROBOT_MAC in open(fr.__file__).read()
+
+
+def test_avahi_ipv6_parsing():
+    assert fr.parse_avahi("raspberrypi.local\tfe80::46d4:2eca:22be:f582\n") == "fe80::46d4:2eca:22be:f582"
+    assert fr.parse_avahi("raspberrypi.local\t169.254.133.10\n") is None  # a self-assigned IPv4: not reachable, not used
+    assert fr.parse_avahi("Failed to resolve host name 'raspberrypi.local': Timeout reached\n") is None
+
+
+def test_ipv6_neighbour_mac(monkeypatch):
+    text = "fe80::46d4:2eca:22be:f582 lladdr b8:27:eb:20:d3:af REACHABLE\nfe80::1 lladdr 3c:64:cf:7d:e6:e0 STALE\n"
+    monkeypatch.setattr(fr.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": text})())
+    assert fr.mac6("FE80::46D4:2ECA:22BE:F582", "wlo1") == fr.ROBOT_MAC
+    assert fr.mac6("fe80::2", "wlo1") is None
+
+
+def test_vnc_target_brackets_ipv6():
+    assert fr.vnc_target("192.168.89.80") == "192.168.89.80:5900"
+    assert fr.vnc_target("fe80::1%wlo1") == "[fe80::1%wlo1]:5900"
+
+
+def test_saved_vnc_entry_and_config(tmp_path):
+    store = tmp_path / "ViewerStore"
+    store.mkdir()
+    (store / "a.vnc").write_text("ConnMethod=tcp\nConnTime=2026-11-04T10:00:00Z\nHost=192.168.89.99:5900\nUserName=pi\nUuid=aaaa\n")
+    (store / "b.vnc").write_text("ConnMethod=tcp\nConnTime=2026-11-09T11:24:34Z\nHost=[fe80::1%wlo1]:5900\nIdentity=00ff\nUserName=pi\nUuid=bbbb\n")
+    (store / "c.vnc").write_text("ConnTime=2026-11-10T00:00:00Z\nHost=10.0.0.1:5900\nUserName=someone\nUuid=cccc\n")
+    entry = fr.saved_vnc_entry(str(store))
+    assert entry["Uuid"] == "bbbb"  # the newest entry for the robot's user, not another user's
+    path = fr.vnc_config(entry, "192.168.89.80", str(tmp_path / "robot.vnc"))
+    text = (tmp_path / "robot.vnc").read_text()
+    assert text.splitlines()[0] == "Host=192.168.89.80:5900" and "Uuid=bbbb" in text and "Identity=00ff" in text
+    assert "ConnTime" not in text and path.endswith("robot.vnc")
+    assert fr.saved_vnc_entry(str(tmp_path / "missing")) is None

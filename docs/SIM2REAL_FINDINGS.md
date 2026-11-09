@@ -352,3 +352,40 @@ for the next model fit on the morning's data; worth re-checking on these.
 
 Still open: backward-left never settled into a cycle (re-record); speeds 3 and 4 not recorded; the Wi-Fi stalls of
 the office channel interrupted two of the ramped walks (the robot's watchdog stopped them, as designed).
+
+## What the REST server sends the gait, and a fall at speed 2 (9 Nov 2026, office)
+
+Parked task 5, run with `python3 tools/record_gait_topics.py --walk 2 --seconds 16`: a recorder on the robot (Python 2
+ROS node) logged `/motion_planning_speed`, `/teleopkey`, `/MoveAction/goal`, `/MoveAction/result` and `/hal_angles_set`
+while the tool sent one REST walk (speed 2, period 1) and a stop. The robot had no IPv4 address that day (the router
+offered one another device held), so ssh ran over its IPv6 link-local address and REST through an ssh tunnel; the
+tool now measures the robot-clock offset first (`clock_offset`) and reports every delay on the robot's clock.
+Log: `robot_dump/robot_logs/gait_topics_20261109_135626.jsonl`; the move node's sources: `robot_dump/move_src/`.
+
+**The gait node is driven by a service, not a topic.** `/motion_planning_speed` and `/teleopkey` carried nothing;
+the gait node also offers the services `/motion_planning` (operation, period, speed_v, speed_h, wave, duration,
+step_num -> rc), `/operation_cmd` (one JSON string -> rc) and `/motion_planning_status`. The chain is:
+
+1. `/apollo` (REST, Python 2, single-threaded) publishes the request as a JSON string on `/MoveAction/goal`.
+2. `/move` (`/opt/yanshee/lib/move/move.py`, a smach state machine) takes the goal. Its GAIT state calls four hal
+   services (battery flags, fall, shutdown, energy mode), waits for the previous gait phase at 0.1 s steps, and when
+   the gait is not "ready" plays hal's `reset`, sleeps a fixed 0.5 s, polls `hal_move_status`, then sends `down`
+   (the crouch) through `/operation_cmd`.
+3. It sends the original JSON to `/operation_cmd`; the gait node starts its 50 Hz frames and reports its status
+   changes back to `/move` through the `status_report` service (so the state machine stays in step whoever commanded).
+
+**Measured, robot clock** (REST sent through the tunnel at t = 0): goal published +102 ms; first gait frame +741 ms
+(the crouch, right after the state machine's `down`); REST reply at the laptop +458 ms; `/move` finished the goal
++830 ms. About 550 ms of the 640 ms between goal and first frame is the first-walk preparation (reset + 0.5 s sleep);
+later walks skip it. Frames: 200 at exactly 20 ms (legs only, servos 6-16), so the gait node itself is not the delay.
+
+**A direct path**: the link node can call `/operation_cmd` with the same JSON (or `/motion_planning` typed), skipping
+the REST server (56-100 ms) and the state machine's checks (100-150 ms); the `down` preparation must then be sent by
+the node when the gait is not ready. Not built: see the fall below.
+
+**The robot fell on its back during this walk.** 1.4 s after the walk started hal's fall detection fired (fall level 2,
+backward), it sent an `up` goal to the gait and played GetupRear itself (8 s, the robot upright afterwards); our stop
+arrived during the get-up and was refused (rc 2). A plain speed-2 start, un-ramped, had worked nine times on 2 Nov
+(robot fresh off the charger, about 8.0 V); today the battery was 68 % (7.76 V) and the robot had been on the charger
+until a minute before. Open: repeat the same walk with the battery full and at 60 %, three times each, watching the
+IMU pitch in the first 2 s, before any work on the command path.

@@ -11,6 +11,14 @@ quick ways first (the address it had last time, the addresses it has had, raspbe
 sweep of the laptop's networks (up to /22, about 1000 addresses, a few seconds) and the ARP table. A find is confirmed
 by GET /v1/devices/battery on port 9090 (battery, charging) and a TCP connect to port 22; the address is remembered
 in ~/.yanshee_robot_ip. Exit code 0 found, 1 not found.
+
+A robot without an IPv4 address (9 Nov 2026: the office router offered it an address another device held, so it fell
+back to a self-assigned 169.254.x.x that nothing could reach) is still found: raspberrypi.local answers over mDNS with
+its IPv6 link-local address, the neighbour table confirms the MAC, and ssh and VNC work over that address. The REST
+server is IPv4-only, so the tools need a lease (or an ssh tunnel) until the router gives one.
+
+--vnc logs in by itself when RealVNC Viewer has a saved connection for the robot's user (connect once by hand, tick
+"Remember password"): the viewer is started with a copy of that saved entry pointing at today's address.
 """
 import argparse
 import concurrent.futures
@@ -36,6 +44,7 @@ REST_PORT, SSH_PORT, VNC_PORT = 9090, 22, 5900
 # authentication only), so --vnc opens RealVNC Connect Viewer, installed from realvnc.com (package
 # realvnc-rvncconnect-viewer). Nothing is changed on the robot.
 REALVNC_VIEWERS = ("/usr/lib/rvncconnect/rvncconnect", "/usr/bin/vncviewer-realvnc", "/usr/lib/vncviewer/vncviewer")
+VNC_STORE = os.path.expanduser("~/.vnc/ViewerStore")  # RealVNC Viewer's saved connections (one .vnc file each)
 MAX_PREFIX = 22  # never sweep more than a /22
 
 
@@ -111,6 +120,7 @@ def rest_battery(ip, timeout=3.0):
 
 
 def port_open(ip, port, timeout=2.0):
+    """TCP connect to ip:port; ip may be an IPv6 link-local address with its interface ('fe80::1%wlo1')."""
     try:
         socket.create_connection((ip, port), timeout=timeout).close()
         return True
@@ -118,11 +128,117 @@ def port_open(ip, port, timeout=2.0):
         return False
 
 
+def vnc_target(ip):
+    """What RealVNC Viewer wants as the address: '[fe80::1%wlo1]:5900' for IPv6, 'IP:5900' otherwise."""
+    return f"[{ip}]:{VNC_PORT}" if ":" in ip else f"{ip}:{VNC_PORT}"
+
+
+def saved_vnc_entry(store=VNC_STORE, user=ROBOT_USER):
+    """RealVNC Viewer's newest saved connection for the robot's user: {"Uuid", "UserName", ...} or None.
+    The viewer keeps one .vnc file (Key=Value lines) per saved connection and the remembered password under its Uuid."""
+    best, best_time = None, ""
+    try:
+        names = os.listdir(store)
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".vnc"):
+            continue
+        try:
+            with open(os.path.join(store, name)) as f:
+                entry = dict(line.rstrip("\n").split("=", 1) for line in f if "=" in line)
+        except OSError:
+            continue
+        if entry.get("UserName") == user and entry.get("Uuid") and entry.get("ConnTime", "") >= best_time:
+            best, best_time = entry, entry.get("ConnTime", "")
+    return best
+
+
+def vnc_config(entry, ip, path):
+    """Write a viewer config file: the saved entry (its Uuid keeps the remembered password) pointing at ip."""
+    keep = ("Uuid", "UserName", "Identity", "ConnMethod")
+    with open(path, "w") as f:
+        f.write(f"Host={vnc_target(ip)}\n")
+        for k in keep:
+            if k in entry:
+                f.write(f"{k}={entry[k]}\n")
+    return path
+
+
 def mdns():
     try:
         return socket.gethostbyname(MDNS_NAME)
     except OSError:
         return None
+
+
+def mdns6():
+    """The IPv6 link-local address raspberrypi.local announces (avahi), without its interface, or None."""
+    try:
+        out = subprocess.run(["avahi-resolve", "-6", "-n", MDNS_NAME], capture_output=True, text=True, timeout=6).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_avahi(out)
+
+
+def parse_avahi(text):
+    """'raspberrypi.local<TAB>fe80::1' -> 'fe80::1' (link-local only), else None."""
+    for line in text.splitlines():
+        p = line.split()
+        if len(p) == 2 and p[1].lower().startswith("fe80:"):
+            return p[1]
+    return None
+
+
+def interfaces():
+    """The laptop's real network interfaces (same filter as networks())."""
+    try:
+        text = subprocess.run(["ip", "-o", "link", "show", "up"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for line in text.splitlines():
+        p = line.split()
+        if len(p) < 2:
+            continue
+        dev = p[1].rstrip(":").split("@")[0]
+        if dev != "lo" and not dev.startswith(("docker", "br-", "veth", "tailscale", "virbr", "tun", "wg")):
+            out.append(dev)
+    return out
+
+
+def ping6(addr, dev, wait_s=1.0):
+    try:
+        return subprocess.run(["ping", "-6", "-c", "1", "-W", str(int(wait_s)), f"{addr}%{dev}"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=wait_s + 2).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def mac6(addr, dev):
+    """The MAC the laptop's IPv6 neighbour table has for addr on dev."""
+    try:
+        text = subprocess.run(["ip", "-6", "neigh", "show", "dev", dev], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in text.splitlines():
+        m = re.match(r"(\S+) .*lladdr ([0-9a-f:]{17})", line)
+        if m and m.group(1).lower() == addr.lower():
+            return m.group(2).lower()
+    return None
+
+
+def find6(say):
+    """The robot by its IPv6 link-local address (mDNS + neighbour table): 'fe80::...%dev' or None."""
+    addr = mdns6()
+    if not addr:
+        return None
+    for dev in interfaces():
+        if ping6(addr, dev) and mac6(addr, dev) == ROBOT_MAC:
+            say(f"{MDNS_NAME} answers over IPv6 at {addr} on {dev} and has the robot's MAC")
+            return f"{addr}%{dev}"
+    say(f"  {MDNS_NAME} has an IPv6 address ({addr}) but it is not the robot's MAC, or it does not answer")
+    return None
 
 
 def candidates():
@@ -168,6 +284,10 @@ def find(verbose=True):
         pis = sorted((ip, mac) for ip, mac in table.items() if mac[:8] in PI_OUIS and ipaddress.ip_address(ip) in net)
         say(f"  {len(up)} addresses answered, the robot's MAC {ROBOT_MAC} is not among them"
             + (f"; other Raspberry Pis: {', '.join(f'{ip} ({mac})' for ip, mac in pis)}" if pis else ""))
+    ip6 = find6(say)
+    if ip6:
+        return {"ip": None, "ip6": ip6, "mac": ROBOT_MAC, "how": "mDNS over IPv6 (no IPv4 address)", "battery": None,
+                "rest": False, "ssh": port_open(ip6, SSH_PORT), "t": time.time()}
     return None
 
 
@@ -189,8 +309,9 @@ def realvnc_viewer():
 
 
 def vnc_open(ip, say=print):
-    """The robot's screen in RealVNC Viewer: starts the viewer on ip:5900 (it asks for the robot's user and password
-    the first time and can remember them). Returns True when the viewer was started."""
+    """The robot's screen in RealVNC Viewer on ip (IPv4, or IPv6 link-local 'fe80::...%dev'). With a saved connection
+    for the robot's user (connect once by hand and tick "Remember password") the viewer logs in by itself; otherwise it
+    asks for the user and password. Returns True when the viewer was started."""
     viewer = realvnc_viewer()
     if viewer is None:
         say("RealVNC Viewer is not installed on this laptop: download 'DEB x64' from "
@@ -199,8 +320,19 @@ def vnc_open(ip, say=print):
     if not port_open(ip, VNC_PORT):
         say(f"the robot's VNC server is not answering on port {VNC_PORT} (it starts with the robot; wait a minute)")
         return False
-    subprocess.Popen([viewer, f"{ip}:{VNC_PORT}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    say(f"RealVNC Viewer opened on {ip}:{VNC_PORT}: log in as {ROBOT_USER} with the robot's password (it can remember them)")
+    entry = saved_vnc_entry()
+    if entry:
+        path = os.path.join(os.path.expanduser("~/.vnc"), "yanshee_robot.vnc")
+        try:
+            vnc_config(entry, ip, path)
+            subprocess.Popen([viewer, "-config", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            say(f"RealVNC Viewer opened on {vnc_target(ip)} with the saved login ({entry['UserName']})")
+            return True
+        except OSError:
+            pass
+    subprocess.Popen([viewer, vnc_target(ip)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    say(f"RealVNC Viewer opened on {vnc_target(ip)}: log in as {ROBOT_USER} with the robot's password and tick "
+        "'Remember password' so the next start logs in by itself")
     return True
 
 
@@ -216,6 +348,15 @@ def main():
     elif res is None:
         print("\nROBOT NOT FOUND on this network. Check: is it switched on (chest light), is it on the same Wi-Fi as this "
               "laptop (the Yanshee app shows its network and IP), did it finish booting (about 3 minutes)?")
+    elif res["ip"] is None:
+        print(f"\nYANSHEE ROBOT without an IPv4 address: {res['ip6']}   (MAC {res['mac']}, found by {res['how']})")
+        print("  The router gave it no address (on 9 Nov 2026 it offered one another device already held). ssh and VNC work")
+        print("  over the IPv6 address; the REST server (port 9090) and the GUI tools need an IPv4 lease: wait, or restart")
+        print("  its DHCP client:  ssh pi@" + res["ip6"] + " sudo systemctl restart dhcpcd")
+        print(f"  ssh (port 22): {'OK' if res['ssh'] else 'NOT answering'}")
+        if args.vnc:
+            print()
+            vnc_open(res["ip6"])
     else:
         b = res["battery"]
         print(f"\nYANSHEE ROBOT: {res['ip']}   (MAC {res['mac']}, found by {res['how']})")

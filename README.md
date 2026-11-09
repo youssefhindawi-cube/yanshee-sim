@@ -65,8 +65,8 @@ python3 -m pytest -q tests                        # everything (about 5 minutes,
 With the robot on the same Wi-Fi (its IP is shown in the Yanshee app); nothing extra to install:
 
 ```bash
-python3 tools/find_robot.py                                 # where is the robot? scans the network for its MAC, checks REST and ssh
-python3 tools/find_robot.py --vnc                           # ... and opens its screen in RealVNC Viewer (the robot's own server, login pi)
+python3 tools/find_robot.py                                 # where is the robot? scans the network for its MAC (IPv4, or IPv6 when it has no lease), checks REST and ssh
+python3 tools/find_robot.py --vnc                           # ... and opens its screen in RealVNC Viewer, logged in by itself once a connection was saved (login pi)
 python3 scripts/mirror.py from-robot --ip 192.168.3.13      # FIRST on new hardware: the simulator copies the robot
 python3 scripts/web_gui.py --ip 192.168.3.13                # GUI connected to the robot; switch to Robot/Both in the page
 python3 scripts/play_motion.py motions/wave_right.json --real --ip 192.168.3.13 --speed 0.5   # run a checked motion, slowly
@@ -718,12 +718,12 @@ Then `python3 tools/build_models.py && python3 tests/test_models.py`. Don't edit
 | `tests/test_controller.py` | The relay controller in sim, robot and both modes: safety gate, STOP and mode-switch races, walking dead-man and gentle stop, a robot that stops answering, concurrency, a soak (`YANSHEE_SOAK_S` shortens it) |
 | `tests/test_server.py` | The web server: every endpoint, bad input, body limits, the WebSocket, MJPEG streams and the robot-camera proxy, a real uvicorn shutdown |
 | `tests/test_link.py` | The robot link's node on a fake ROS (`tests/fake_ros/`, Python 3 and 2): REST through the link and the fallback, the robot's watchdog stopping a walk and a looping turn when the laptop goes quiet, the balance's ankle frames on the firmware walk and their fade, the controller bringing a lost link back |
-| `tests/test_find_robot.py` | `tools/find_robot.py` without the robot: the laptop's networks (virtual ones skipped, big ones capped), the ARP parsing, the CLI |
+| `tests/test_find_robot.py` | `tools/find_robot.py` without the robot: the laptop's networks (virtual ones skipped, big ones capped), the ARP and IPv6 neighbour parsing, the mDNS reply, the saved RealVNC connection and the viewer config it writes, the CLI |
 | `tests/test_robot_setup.py` | `tools/robot_setup.py`: the three files it installs on the Pi parse and carry the marker it uninstalls by |
 | `tests/test_latency.py` | `tools/latency_test.py` without the robot: the link echo and REST timing locally, ping, Wi-Fi parsing (`iw` and `iwconfig`), the command -> servo timing from a robot log |
 | `tests/test_yanapi_sim.py` | `run_in_sim.py`'s simulated YanAPI (official examples run unchanged), `record_real_motion.py`, `pose_editor.py`, `view.py` |
 
-`python3 -m pytest -q tests` runs all 201 (7 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
+`python3 -m pytest -q tests` runs all 205 (7 minutes, headless with `MUJOCO_GL=egl`); `python3 tests/test_NAME.py`
 runs one file. `tests/fake_robot.py` is the fake Yanshee REST server behind the robot tests; run it by hand for GUI
 work without hardware (`--battery 20`, `--refuse`, `--slow 5` inject errors).
 

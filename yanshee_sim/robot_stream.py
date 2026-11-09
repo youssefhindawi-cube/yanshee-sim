@@ -737,7 +737,8 @@ def fetch(host, remote_path, dest_dir, user="pi", password="raspberry", env=None
     os.makedirs(dest_dir, exist_ok=True)
     local = os.path.join(dest_dir, os.path.basename(remote_path))
     env = env or dict(os.environ, SSHPASS=password)
-    r = subprocess.run(["sshpass", "-e", "scp", "-q", "-o", "StrictHostKeyChecking=no", f"{user}@{host}:{remote_path}", local],
+    h = f"[{host}]" if ":" in host else host  # an IPv6 address in scp's host part
+    r = subprocess.run(["sshpass", "-e", "scp", "-q", "-o", "StrictHostKeyChecking=no", f"{user}@{h}:{remote_path}", local],
                        env=env, timeout=120, capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(f"cannot copy {remote_path} from the robot: {r.stderr.strip()[:200]}")

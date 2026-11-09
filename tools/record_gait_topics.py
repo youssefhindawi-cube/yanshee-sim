@@ -8,6 +8,11 @@ node's input topics while it walks, so the robot link can publish the same thing
                                                                       # (and its stop) over REST, timed: robot standing,
                                                                       # clear floor, someone ready to catch it
     python3 tools/record_gait_topics.py --ip IP --seconds 15 --quiet  # no walking: just check the recorder runs
+    python3 tools/record_gait_topics.py --ip 127.0.0.1:19090 --ssh fe80::1%wlo1 ...   # REST through an ssh tunnel, ssh over IPv6
+                                                                      # (the robot without an IPv4 lease, 9 Nov 2026)
+
+The robot's clock is not the laptop's (it is only synced when it has internet): the tool measures the offset over ssh
+first (a few timestamp round trips) and gives every REST -> robot delay on the robot's clock.
 
 On the robot a small ROS node (Python 2) logs every message on /motion_planning_speed (ubt_msgs: speed_v, speed_h),
 /teleopkey (geometry_msgs/Twist), the REST server's /MoveAction/goal (what /apollo actually publishes: an actionlib
@@ -70,6 +75,21 @@ def ssh_cmd(args, host):
     return ["sshpass", "-e", "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10", f"{args.user}@{host}"]
 
 
+def clock_offset(args, host, env, n=5):
+    """robot clock - laptop clock in seconds (median of n round trips, each timed at its midpoint), or None."""
+    offs = []
+    for _ in range(n):
+        t0 = time.time()
+        r = subprocess.run(ssh_cmd(args, host) + ["python -c 'import time; print(repr(time.time()))'"], env=env,
+                           capture_output=True, text=True, timeout=30)
+        t1 = time.time()
+        try:
+            offs.append(float(r.stdout.strip()) - (t0 + t1) / 2)
+        except ValueError:
+            pass
+    return statistics.median(offs) if offs else None
+
+
 def rosinfo(args, host, env):
     """What ROS says about the gait node's inputs and the REST server node, before anything moves (read-only)."""
     cmd = (ROS_ENV + "for t in /motion_planning_speed /teleopkey; do echo \"== $t\"; rostopic info $t 2>&1 | grep -A3 -E 'Type|Publishers'; done; "
@@ -86,10 +106,16 @@ def main():
     ap.add_argument("--quiet", action="store_true", help="no reminder to walk the robot (a passive check)")
     ap.add_argument("--user", default="pi")
     ap.add_argument("--password", default="raspberry")
+    ap.add_argument("--ssh", metavar="HOST", help="ssh address when it differs from --ip (an IPv6 link-local address, "
+                    "or --ip is an ssh tunnel to the robot's REST port)")
     args = ap.parse_args()
-    host = args.ip.split(":")[0]
+    host = args.ssh or args.ip.rsplit(":", 1)[0]
     env = dict(os.environ, SSHPASS=args.password)
     print(rosinfo(args, host, env), flush=True)
+    offset = clock_offset(args, host, env)
+    if offset is None:
+        sys.exit("cannot read the robot's clock over ssh")
+    print(f"robot clock - laptop clock: {offset:+.3f} s" + ("  (the robot's clock is not synced)" if abs(offset) > 2 else ""), flush=True)
     up = subprocess.run(ssh_cmd(args, host) + [f"cat > {REMOTE_PATH}"], input=RECORDER, env=env, text=True, timeout=30,
                         capture_output=True)
     if up.returncode:
@@ -126,13 +152,15 @@ def main():
     local = fetch(host, remote_log, os.path.join(ROOT, "robot_dump", "robot_logs"), user=args.user, password=args.password)
     rows = [json.loads(l) for l in open(local) if l.strip()]
     print(f"\ncopied {os.path.relpath(local, ROOT)}: {len(rows)} rows")
-    summary(rows, cmds, t0)
+    summary(rows, cmds, t0, offset)
     with open(local, "a") as f:
+        f.write(json.dumps({"k": "clock", "offset": offset}) + "\n")
         for c in cmds:
             f.write(json.dumps(dict(c, k="rest_cmd")) + "\n")
 
 
-def summary(rows, cmds, t0):
+def summary(rows, cmds, t0, offset=0.0):
+    """rows: the robot's records (robot clock); cmds: the laptop's REST commands (laptop clock); offset: robot - laptop."""
     speeds = [r for r in rows if r["k"] == "speed"]
     teleop = [r for r in rows if r["k"] == "teleop"]
     frames = [r for r in rows if r["k"] == "frame"]
@@ -159,12 +187,20 @@ def summary(rows, cmds, t0):
                     gaps.append((nxt["t"] - s["t"]) * 1000)
         if gaps:
             print(f"speed message -> first gait frame: median {statistics.median(gaps):.0f} ms ({len(gaps)} walks)")
-    if cmds and speeds:  # the laptop's REST command to the topic message (clocks differ by the ping offset: rough)
+    if cmds:  # the laptop's REST command (moved onto the robot's clock) to the goal, the speed message and the first frame
+        print("REST command -> the robot (robot clock, offset applied):")
         for c in cmds:
-            after = [s for s in speeds if s["t"] >= c["lt"] - 0.5]
-            if after:
-                print(f"REST '{c['cmd']}' at +{c['lt'] - t0:.2f} s -> first speed message +{after[0]['t'] - rows[0]['t']:.2f} s "
-                      f"(robot clock; the REST call itself took {(c['lt_done'] - c['lt']) * 1000:.0f} ms)")
+            rt = c["lt"] + offset  # the command's send time on the robot's clock
+            rt_done = c["lt_done"] + offset
+            def first(kind, pred=lambda r: True):
+                return next((r for r in rows if r["k"] == kind and r["t"] >= rt - 0.05 and pred(r)), None)
+            g = first("goal")
+            sp = first("speed")
+            fr = first("frame", lambda r: r["src"].endswith("gait_node")) if "stop" not in c["cmd"] else None
+            def ms(r):
+                return f"{(r['t'] - rt) * 1000:5.0f} ms" if r else "    - "
+            print(f"   '{c['cmd']}': REST reply {(rt_done - rt) * 1000:4.0f} ms | /MoveAction/goal {ms(g)} | "
+                  f"/motion_planning_speed {ms(sp)} | first gait frame {ms(fr)}")
 
 
 if __name__ == "__main__":
